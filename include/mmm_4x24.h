@@ -95,20 +95,9 @@ inline void kernel_4x24(
   c2 = c1 + out_channel  ; c3 = c2 + out_channel;
     
   // store outputs
-  ymm15 = _mm256_load_ps(c0+0);       ymm14 = _mm256_load_ps(c0+ 8);      ymm13 = _mm256_load_ps(c0+ 16);
-  ymm0 = _mm256_add_ps(ymm0, ymm15);  ymm1 = _mm256_add_ps(ymm1, ymm14);  ymm2 = _mm256_add_ps(ymm2, ymm13);
   _mm256_stream_ps(c0+0, ymm0);        _mm256_stream_ps(c0+8, ymm1);        _mm256_stream_ps(c0+16, ymm2);
-
-  ymm15 = _mm256_load_ps(c1+0);       ymm14 = _mm256_load_ps(c1+ 8);      ymm13 = _mm256_load_ps(c1+ 16);
-  ymm3 = _mm256_add_ps(ymm3, ymm15);  ymm4 = _mm256_add_ps(ymm4, ymm14);  ymm5 = _mm256_add_ps(ymm5, ymm13);
   _mm256_stream_ps(c1+0, ymm3);        _mm256_stream_ps(c1+8, ymm4);        _mm256_stream_ps(c1+16, ymm5);
-
-  ymm15 = _mm256_load_ps(c2+0);       ymm14 = _mm256_load_ps(c2+ 8);      ymm13 = _mm256_load_ps(c2+ 16);
-  ymm6 = _mm256_add_ps(ymm6, ymm15);  ymm7 = _mm256_add_ps(ymm7, ymm14);  ymm8 = _mm256_add_ps(ymm8, ymm13);
   _mm256_stream_ps(c2+0, ymm6);        _mm256_stream_ps(c2+8, ymm7);        _mm256_stream_ps(c2+16, ymm8);
-
-  ymm15 = _mm256_load_ps(c3+0);       ymm14 = _mm256_load_ps(c3+ 8);       ymm13 = _mm256_load_ps(c3+ 16);
-  ymm9 = _mm256_add_ps(ymm9, ymm15);  ymm10 = _mm256_add_ps(ymm10, ymm14); ymm11 = _mm256_add_ps(ymm11, ymm13);
   _mm256_stream_ps(c3+0, ymm9);        _mm256_stream_ps(c3+8, ymm10);        _mm256_stream_ps(c3+16, ymm11);
 
  }
@@ -206,32 +195,12 @@ inline void kernel_4xR
     
   // store outputs
   switch (R) {
-    case 16: // store upper channel
-      ymm15 = _mm256_load_ps(c0+8);
-      ymm14 = _mm256_load_ps(c1+8);
-      ymm13 = _mm256_load_ps(c2+8);
-      ymm12 = _mm256_load_ps(c3+8);
-
-      ymm1 = _mm256_add_ps(ymm1, ymm15);      
-      ymm3 = _mm256_add_ps(ymm3, ymm14);
-      ymm5 = _mm256_add_ps(ymm5, ymm13);
-      ymm7 = _mm256_add_ps(ymm7, ymm12);
-
+    case 16: 
       _mm256_stream_ps(c0+8, ymm1);        
       _mm256_stream_ps(c1+8, ymm3);      
       _mm256_stream_ps(c2+8, ymm5);      
       _mm256_stream_ps(c3+8, ymm7);        
     case 8: // store lower channel
-      ymm15 = _mm256_load_ps(c0);
-      ymm14 = _mm256_load_ps(c1);
-      ymm13 = _mm256_load_ps(c2);
-      ymm12 = _mm256_load_ps(c3);
-
-      ymm0 = _mm256_add_ps(ymm0, ymm15);      
-      ymm2 = _mm256_add_ps(ymm2, ymm14);
-      ymm4 = _mm256_add_ps(ymm4, ymm13);
-      ymm6 = _mm256_add_ps(ymm6, ymm12);
-
       _mm256_stream_ps(c0, ymm0);        
       _mm256_stream_ps(c1, ymm2);      
       _mm256_stream_ps(c2, ymm4);      

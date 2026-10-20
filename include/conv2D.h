@@ -106,7 +106,7 @@ float *kernel_pack(float *kernel, int K, int output_C){
 // for consectutive acccess to a values need for an output pixel
 // buffer produces all values needed to for output row of pixels.
 // At the same time pads the data. Output produces packed W x K
-inline void im2window3x3(
+void im2window3x3(
     float *input, 
     int H, // Height of Input Image
     int W, // Width of Input Image
@@ -289,7 +289,7 @@ float *conv_3x3(
     int CK2 = 9 * input_C; // size of single pixel vector
     int C_iters = output_C / 24; 
     int C_left = output_C % 24; // should be a mulitple of 8
-    int kernel_step = CK2 *24;
+    int kernel_step = CK2 * 24;
     int output_dim = output_h * output_w;
 
     float *output_ptr;

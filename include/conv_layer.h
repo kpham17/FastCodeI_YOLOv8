@@ -34,9 +34,9 @@ float *conv_layer(
     batchnorm(conv2d_output, H, W, output_C); //placeholder
 
     float *output;
-    output = fast_SILU(conv2d_output, H, W, output_C);
+    output = taylor_SILU(conv2d_output, H, W, output_C);
     _mm_free(conv2d_output);
-    mm_free(batchnorm_output);
+    _mm_free(batchnorm_output);
     
     return output;
 }
