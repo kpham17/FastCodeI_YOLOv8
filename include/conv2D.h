@@ -294,6 +294,7 @@ float *conv_3x3(
 
     float *output_ptr;
     float *output = (float *)_mm_malloc(output_dim * output_C * sizeof(float),32);    
+    memset(output, 0, (size_t)output_dim * output_C * sizeof(float));
     float *im2window_buffer = (float *)_mm_malloc((W+2) * input_C * 3* sizeof(float), 32);
     float *A_buffer = (float *)_mm_malloc(4 * CK2 * sizeof(float), 32); 
 
