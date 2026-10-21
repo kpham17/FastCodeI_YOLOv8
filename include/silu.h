@@ -277,7 +277,7 @@ float *taylor_SILU(float* input, int H, int W, int C){
         ymm7 = _mm256_load_ps(input_ptr + 56);
 
         // Negate using xor
-        ymm8  =  _mm256_xor_ps(ymm0, neg_mask);
+        ymm8  =  _mm256_xor_ps(ymm0, neg_mask); 
         ymm9  =  _mm256_xor_ps(ymm1, neg_mask);
         ymm10 =  _mm256_xor_ps(ymm2, neg_mask);
         ymm11 =  _mm256_xor_ps(ymm3, neg_mask);
@@ -316,6 +316,35 @@ float *taylor_SILU(float* input, int H, int W, int C){
         ymm13 = _mm256_fnmadd_ps(ymm21, ln2, ymm13);
         ymm14 = _mm256_fnmadd_ps(ymm22, ln2, ymm14);
         ymm15 = _mm256_fnmadd_ps(ymm23, ln2, ymm15);
+
+        // Convert to int to do 2^k quickly
+        ymm16 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm16)); 
+        ymm17 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm17)); 
+        ymm18 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm18)); 
+        ymm19 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm19)); 
+        ymm20 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm20)); 
+        ymm21 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm21)); 
+        ymm22 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm22)); 
+        ymm23 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm23)); 
+
+        // shift k to the exponent bits
+        ymm16 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm16), 23)); 
+        ymm17 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm17), 23)); 
+        ymm18 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm18), 23)); 
+        ymm19 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm19), 23)); 
+        ymm20 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm20), 23)); 
+        ymm21 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm21), 23)); 
+        ymm22 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm22), 23)); 
+        ymm23 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm23), 23)); 
+        // Add the bias
+        ymm16 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm16), exp_bias));
+        ymm17 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm17), exp_bias));
+        ymm18 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm18), exp_bias));
+        ymm19 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm19), exp_bias));
+        ymm20 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm20), exp_bias));
+        ymm21 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm21), exp_bias));
+        ymm22 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm22), exp_bias));
+        ymm23 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm23), exp_bias));
 
         //Taylor expansion: 1 + r +r^2/2 + r^3/6 + r^4/24+ r^5/120
         // 1 + r(1 + r(1/2 + r(1/6+ r(1/23 + r*(1/120))))) 
@@ -367,34 +396,6 @@ float *taylor_SILU(float* input, int H, int W, int C){
         ymm5 = _mm256_fmadd_ps(ymm13, ymm5, c1);
         ymm6 = _mm256_fmadd_ps(ymm14, ymm6, c1);
         ymm7 = _mm256_fmadd_ps(ymm15, ymm7, c1);
-
-        // Convert to int to do 2^k quickly
-        ymm16 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm16)); 
-        ymm17 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm17)); 
-        ymm18 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm18)); 
-        ymm19 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm19)); 
-        ymm20 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm20)); 
-        ymm21 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm21)); 
-        ymm22 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm22)); 
-        ymm23 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm23)); 
-        // shift k to the exponent bits
-        ymm16 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm16), 23)); 
-        ymm17 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm17), 23)); 
-        ymm18 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm18), 23)); 
-        ymm19 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm19), 23)); 
-        ymm20 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm20), 23)); 
-        ymm21 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm21), 23)); 
-        ymm22 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm22), 23)); 
-        ymm23 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm23), 23)); 
-        // Add the bias
-        ymm16 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm16), exp_bias));
-        ymm17 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm17), exp_bias));
-        ymm18 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm18), exp_bias));
-        ymm19 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm19), exp_bias));
-        ymm20 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm20), exp_bias));
-        ymm21 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm21), exp_bias));
-        ymm22 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm22), exp_bias));
-        ymm23 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm23), exp_bias));
 
         // Reload x from storage
         ymm8 = _mm256_load_ps(input_ptr);
@@ -518,6 +519,39 @@ float *taylor_SILU(float* input, int H, int W, int C){
         default: break;
     }
 
+    switch (d_left) {    // Convert to int to do 2^k quickly
+        case 7: ymm22 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm22)); 
+        case 6: ymm21 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm21)); 
+        case 5: ymm20 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm20)); 
+        case 4: ymm19 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm19)); 
+        case 3: ymm18 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm18)); 
+        case 2: ymm17 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm17)); 
+        case 1: ymm16 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm16)); 
+        default: break;
+    }
+    
+    switch (d_left) {    // shift k to the exponent bits
+        case 7: ymm22 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm22), 23)); 
+        case 6: ymm21 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm21), 23)); 
+        case 5: ymm20 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm20), 23)); 
+        case 4: ymm19 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm19), 23)); 
+        case 3: ymm18 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm18), 23)); 
+        case 2: ymm17 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm17), 23)); 
+        case 1: ymm16 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm16), 23)); 
+        default: break;
+    }
+    
+    switch (d_left) {    // Add the bias
+        case 7: ymm22 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm22), exp_bias));
+        case 6: ymm21 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm21), exp_bias));
+        case 5: ymm20 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm20), exp_bias));
+        case 4: ymm19 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm19), exp_bias));
+        case 3: ymm18 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm18), exp_bias));
+        case 2: ymm17 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm17), exp_bias));
+        case 1: ymm16 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm16), exp_bias));
+        default: break;
+    }
+
     switch (d_left) {  //Taylor expansion: 1 + r +r^2/2 + r^3/6 + r^4/24+ r^5/120
         // i = 4, 1/24 + r/120
         case 7: ymm6 = _mm256_fmadd_ps(ymm14, c5, c4);
@@ -573,39 +607,6 @@ float *taylor_SILU(float* input, int H, int W, int C){
         case 3: ymm2 = _mm256_fmadd_ps(ymm10, ymm2, c1);
         case 2: ymm1 = _mm256_fmadd_ps(ymm9,  ymm1, c1);
         case 1: ymm0 = _mm256_fmadd_ps(ymm8,  ymm0, c1);
-        default: break;
-    }
-
-    switch (d_left) {    // Convert to int to do 2^k quickly
-        case 7: ymm22 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm22)); 
-        case 6: ymm21 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm21)); 
-        case 5: ymm20 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm20)); 
-        case 4: ymm19 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm19)); 
-        case 3: ymm18 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm18)); 
-        case 2: ymm17 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm17)); 
-        case 1: ymm16 = _mm256_castsi256_ps(_mm256_cvtps_epi32(ymm16)); 
-        default: break;
-    }
-    
-    switch (d_left) {    // shift k to the exponent bits
-        case 7: ymm22 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm22), 23)); 
-        case 6: ymm21 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm21), 23)); 
-        case 5: ymm20 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm20), 23)); 
-        case 4: ymm19 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm19), 23)); 
-        case 3: ymm18 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm18), 23)); 
-        case 2: ymm17 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm17), 23)); 
-        case 1: ymm16 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_castps_si256(ymm16), 23)); 
-        default: break;
-    }
-    
-    switch (d_left) {    // Add the bias
-        case 7: ymm22 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm22), exp_bias));
-        case 6: ymm21 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm21), exp_bias));
-        case 5: ymm20 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm20), exp_bias));
-        case 4: ymm19 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm19), exp_bias));
-        case 3: ymm18 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm18), exp_bias));
-        case 2: ymm17 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm17), exp_bias));
-        case 1: ymm16 = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(ymm16), exp_bias));
         default: break;
     }
 
