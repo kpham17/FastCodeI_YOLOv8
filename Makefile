@@ -1,5 +1,5 @@
 CC ?= gcc
-CFLAGS ?= -O2 -std=c11 -mavx2 -mfma
+CFLAGS ?= -O2 -std=c11 -mavx2 -mfma -mavx512f -march=native
 LDLIBS ?= -lm
 
 TEST_BIN = test_correctness.x
