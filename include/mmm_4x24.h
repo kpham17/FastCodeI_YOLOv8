@@ -95,10 +95,10 @@ inline void kernel_4x24(
   c2 = c1 + out_channel  ; c3 = c2 + out_channel;
     
   // store outputs
-  _mm256_stream_ps(c0+0, ymm0);        _mm256_stream_ps(c0+8, ymm1);        _mm256_stream_ps(c0+16, ymm2);
-  _mm256_stream_ps(c1+0, ymm3);        _mm256_stream_ps(c1+8, ymm4);        _mm256_stream_ps(c1+16, ymm5);
-  _mm256_stream_ps(c2+0, ymm6);        _mm256_stream_ps(c2+8, ymm7);        _mm256_stream_ps(c2+16, ymm8);
-  _mm256_stream_ps(c3+0, ymm9);        _mm256_stream_ps(c3+8, ymm10);        _mm256_stream_ps(c3+16, ymm11);
+  _mm256_store_ps(c0+0, ymm0);        _mm256_store_ps(c0+8, ymm1);        _mm256_store_ps(c0+16, ymm2);
+  _mm256_store_ps(c1+0, ymm3);        _mm256_store_ps(c1+8, ymm4);        _mm256_store_ps(c1+16, ymm5);
+  _mm256_store_ps(c2+0, ymm6);        _mm256_store_ps(c2+8, ymm7);        _mm256_store_ps(c2+16, ymm8);
+  _mm256_store_ps(c3+0, ymm9);        _mm256_store_ps(c3+8, ymm10);        _mm256_store_ps(c3+16, ymm11);
 
  }
 
@@ -196,15 +196,15 @@ inline void kernel_4xR
   // store outputs
   switch (R) {
     case 16: 
-      _mm256_stream_ps(c0+8, ymm1);        
-      _mm256_stream_ps(c1+8, ymm3);      
-      _mm256_stream_ps(c2+8, ymm5);      
-      _mm256_stream_ps(c3+8, ymm7);        
+      _mm256_store_ps(c0+8, ymm1);        
+      _mm256_store_ps(c1+8, ymm3);      
+      _mm256_store_ps(c2+8, ymm5);      
+      _mm256_store_ps(c3+8, ymm7);        
     case 8: // store lower channel
-      _mm256_stream_ps(c0, ymm0);        
-      _mm256_stream_ps(c1, ymm2);      
-      _mm256_stream_ps(c2, ymm4);      
-      _mm256_stream_ps(c3, ymm6);        
+      _mm256_store_ps(c0, ymm0);        
+      _mm256_store_ps(c1, ymm2);      
+      _mm256_store_ps(c2, ymm4);      
+      _mm256_store_ps(c3, ymm6);        
     default: // store lower channel
       break;
   }  
