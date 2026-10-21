@@ -12,7 +12,7 @@ float *padinput_16x(
     int W, // Width of Input Image
     int C // Number of Input Channels (multiple of 4)
 ){
-    int padded_len = (C + 63) / 64 * 64;
+    int padded_len = (C + 15) / 16 * 16;
     float *ptr = input;
     float *output = (float *)_mm_malloc(H * W * padded_len * sizeof(float), 64);
     memset(output, 0, H * W * padded_len * sizeof(float));
@@ -45,44 +45,44 @@ float *kernel_pack(float *kernel, int K, int output_C){
             ptr2 = ptr1 + output_C;
             ptr3 = ptr2 + output_C;
             _mm512_store_ps(ptr_out, _mm512_load_ps(ptr0));
-            _mm512_store_ps(ptr_out + 8, _mm512_load_ps(ptr0+16));
-            _mm512_store_ps(ptr_out + 16, _mm512_load_ps(ptr0+32));
+            _mm512_store_ps(ptr_out + 16, _mm512_load_ps(ptr0+16));
+            _mm512_store_ps(ptr_out + 32, _mm512_load_ps(ptr0+32));
             ptr_out += 48;
             ptr0 +=48;
 
             _mm512_store_ps(ptr_out, _mm512_load_ps(ptr1));
-            _mm512_store_ps(ptr_out + 8, _mm512_load_ps(ptr1+16));
-            _mm512_store_ps(ptr_out + 16, _mm512_load_ps(ptr1+32));
+            _mm512_store_ps(ptr_out + 16, _mm512_load_ps(ptr1+16));
+            _mm512_store_ps(ptr_out + 32, _mm512_load_ps(ptr1+32));
             ptr_out += 48;
             ptr1 +=48;
 
             _mm512_store_ps(ptr_out, _mm512_load_ps(ptr2));
-            _mm512_store_ps(ptr_out + 8, _mm512_load_ps(ptr2+16));
-            _mm512_store_ps(ptr_out + 16, _mm512_load_ps(ptr2+32));
+            _mm512_store_ps(ptr_out + 16, _mm512_load_ps(ptr2+16));
+            _mm512_store_ps(ptr_out + 32, _mm512_load_ps(ptr2+32));
             ptr_out += 48;
             ptr2 +=48;
 
             _mm512_store_ps(ptr_out, _mm512_load_ps(ptr3));
-            _mm512_store_ps(ptr_out + 8, _mm512_load_ps(ptr3+16));
-            _mm512_store_ps(ptr_out + 16, _mm512_load_ps(ptr3+32));
+            _mm512_store_ps(ptr_out + 16, _mm512_load_ps(ptr3+16));
+            _mm512_store_ps(ptr_out + 32, _mm512_load_ps(ptr3+32));
             ptr_out += 48;
             ptr3 +=48;
         }
     }
     // Deal with the special case last kernel
     if (C_left > 0 ){
-        ptr0 = kernel + C_iters*24;
+        ptr0 = kernel + C_iters*48;
         ptr1 = ptr0 + output_C;
         ptr2 = ptr1 + output_C;
         ptr3 = ptr2 + output_C;
         for (int k = 0; k < K; k +=4){
             switch (C_left){
-            case 16:
+            case 32:
                 _mm512_store_ps(ptr_out + 16, _mm512_load_ps(ptr0+16));
                 _mm512_store_ps(ptr_out + 48, _mm512_load_ps(ptr1+16));
                 _mm512_store_ps(ptr_out + 80, _mm512_load_ps(ptr2+16));
                 _mm512_store_ps(ptr_out + 112, _mm512_load_ps(ptr3+16));
-            case 8:
+            case 16:
                 _mm512_store_ps(ptr_out , _mm512_load_ps(ptr0));
                 _mm512_store_ps(ptr_out + C_left, _mm512_load_ps(ptr1));
                 _mm512_store_ps(ptr_out + C_left * 2, _mm512_load_ps(ptr2));
@@ -290,14 +290,14 @@ float *conv_3x3(
     int CK2 = 9 * input_C; // size of single pixel vector
     int C_iters = output_C / 48; 
     int C_left = output_C % 48; // should be a mulitple of 8
-    int kernel_step = CK2 * 24;
+    int kernel_step = CK2 * 48;
     int output_dim = output_h * output_w;
 
     float *output_ptr;
     float *output = (float *)_mm_malloc(output_dim * output_C * sizeof(float),64);    
-    memset(output, 0, (size_t)output_dim * output_C * sizeof(float));
+    //memset(output, 0, (size_t)output_dim * output_C * sizeof(float));
     float *im2window_buffer = (float *)_mm_malloc((W+2) * input_C * 3* sizeof(float), 64);
-    float *A_buffer = (float *)_mm_malloc(4 * CK2 * sizeof(float), 32); 
+    float *A_buffer = (float *)_mm_malloc(4 * CK2 * sizeof(float), 64); 
 
     // pack the kernel
     float *packed_kernel = kernel_pack(kernel, CK2, output_C);    
@@ -311,7 +311,7 @@ float *conv_3x3(
             get_mmm_window_3x3(im2window_buffer, input_C, stride, i, A_buffer); // Get 4 x K for MMM
             for (int c = 0; c < C_iters; ++c){
                 kernel_4x48(CK2, A_buffer, kernel_ptr, output_ptr, output_C); 
-                output_ptr += 24; // Move to the next 24 values of C out
+                output_ptr += 48; // Move to the next 24 values of C out
                 kernel_ptr += kernel_step; // Move to the next kernel
             }
             if (C_left > 0){ // take care of remaining (C_left = 8 or 16)
@@ -323,7 +323,6 @@ float *conv_3x3(
     _mm_free(A_buffer);
     _mm_free(packed_kernel);
 
-    _mm_sfence();
     return output;
 
 }
@@ -343,7 +342,7 @@ float * conv_1x1(
     // 1x1 kernel have same input and output dimension
     int C_iters = output_C / 48;
     int C_left = output_C % 48; // should be a mulitple of 8
-    int kernel_step = input_C * 24;
+    int kernel_step = input_C * 48;
     int input_step = input_C * 4;
     int output_dim = H * W;
 
@@ -359,11 +358,11 @@ float * conv_1x1(
         for (int i = 0; i < W; i += 4){ 
             float *kernel_ptr = packed_kernel;
             output_ptr = output + output_C * (h * W + i);
-            get_mmm_window_1x1(input_ptr, input_C, A_buffer);
+            get_mmm_window_1x1(input_ptr, input_C, A_buffer); // 4 output windows
             for (int c = 0; c < C_iters; ++c){
                 kernel_4x48(input_C, A_buffer, kernel_ptr, output_ptr, output_C);
                 // Output is HW x output_C, 
-                output_ptr += 24; // shift over to the right
+                output_ptr += 48; // shift over to the right
                 kernel_ptr += kernel_step;
             }
             if (C_left > 0){ // take care of remaining(C_left = 8 or 16)
@@ -372,7 +371,6 @@ float * conv_1x1(
             input_ptr += input_step; //Since looping H, W, C, increment by C * 4
         }
     }   
-    _mm_sfence();
     _mm_free(A_buffer);
     _mm_free(packed_kernel);
 

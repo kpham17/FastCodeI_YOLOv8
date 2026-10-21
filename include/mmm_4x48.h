@@ -1,19 +1,19 @@
 #include <immintrin.h>
 
-// 4x24 kernel for mxm multiplication
+// 4x48 kernel for mxm multiplication
 // Make use of AVX 512
 inline void kernel_4x48(
   int k, 
-  float* restrict, 
+  float* restrict a, 
   float* restrict b, 
   float* restrict c, 
   int out_channel
 )
  {
 
-  __m512 ymm0, ymm1, ymm2, ymm3, ymm4, ymm5, ymm6, ymm7;
-  __m512 ymm8, ymm9, ymm10, ymm11, ymm12, ymm13, ymm14, ymm15;
-  __m512 ymm16;
+  __m512 zmm0, zmm1, zmm2, zmm3, zmm4, zmm5, zmm6, zmm7;
+  __m512 zmm8, zmm9, zmm10, zmm11, zmm12, zmm13, zmm14, zmm15;
+  __m512 zmm16;
     
   float* bptr = b;
   float* aptr = a;
@@ -21,32 +21,41 @@ inline void kernel_4x48(
   int k_iter = k / 4;
   int k_left = k % 4;
 
+  zmm0 = _mm512_setzero_ps();  zmm1 = _mm512_setzero_ps();
+  zmm2 = _mm512_setzero_ps();  zmm3 = _mm512_setzero_ps();
+  zmm4 = _mm512_setzero_ps();  zmm5 = _mm512_setzero_ps();
+  zmm6 = _mm512_setzero_ps();  zmm7 = _mm512_setzero_ps();
+  zmm8 = _mm512_setzero_ps();  zmm9 = _mm512_setzero_ps();
+  zmm10 = _mm512_setzero_ps();  zmm11 = _mm512_setzero_ps();
+  zmm12 = _mm512_setzero_ps();  zmm13 = _mm512_setzero_ps();
+  zmm14 = _mm512_setzero_ps();  zmm15 = _mm512_setzero_ps();
+  zmm16 = _mm512_setzero_ps(); 
   for (int p = 0; p != k_iter; ++p) {
     #pragma unroll
     for (int i = 0; i < 4; ++i) {
-      ymm15 = _mm512_load_ps(bptr);
-      ymm14 = _mm512_load_ps(bptr+16);
-      ymm13 = _mm512_load_ps(bptr+32);
+      zmm15 = _mm512_load_ps(bptr);
+      zmm14 = _mm512_load_ps(bptr+16);
+      zmm13 = _mm512_load_ps(bptr+32);
       
-      ymm12 = _mm512_set1_ps(*(aptr+0));
-      ymm0 = _mm512_fmadd_ps(ymm12, ymm15, ymm0);
-      ymm1 = _mm512_fmadd_ps(ymm12, ymm14, ymm1);
-      ymm2 = _mm512_fmadd_ps(ymm12, ymm13, ymm2);
+      zmm12 = _mm512_set1_ps(*(aptr+0));
+      zmm0  = _mm512_fmadd_ps(zmm12, zmm15, zmm0);
+      zmm1  = _mm512_fmadd_ps(zmm12, zmm14, zmm1);
+      zmm2  = _mm512_fmadd_ps(zmm12, zmm13, zmm2);
       
-      ymm16 = _mm512_set1_ps(*(aptr+1));
-      ymm3 = _mm512_fmadd_ps(ymm12, ymm15, ymm3);
-      ymm4 = _mm512_fmadd_ps(ymm12, ymm14, ymm4);
-      ymm5 = _mm512_fmadd_ps(ymm12, ymm13, ymm5);
+      zmm16 = _mm512_set1_ps(*(aptr+1));
+      zmm3  = _mm512_fmadd_ps(zmm16, zmm15, zmm3);
+      zmm4  = _mm512_fmadd_ps(zmm16, zmm14, zmm4);
+      zmm5  = _mm512_fmadd_ps(zmm16, zmm13, zmm5);
  
-      ymm12 = _mm512_set1_ps(*(aptr+2));
-      ymm6 = _mm512_fmadd_ps(ymm12, ymm15, ymm6);
-      ymm7 = _mm512_fmadd_ps(ymm12, ymm14, ymm7);
-      ymm8 = _mm512_fmadd_ps(ymm12, ymm13, ymm8);
+      zmm12 = _mm512_set1_ps(*(aptr+2));
+      zmm6  = _mm512_fmadd_ps(zmm12, zmm15, zmm6);
+      zmm7  = _mm512_fmadd_ps(zmm12, zmm14, zmm7);
+      zmm8  = _mm512_fmadd_ps(zmm12, zmm13, zmm8);
  
-      ymm16 = _mm512_set1_ps(*(aptr+3));
-      ymm9 = _mm512_fmadd_ps(ymm12, ymm15, ymm9);
-      ymm10 = _mm512_fmadd_ps(ymm12, ymm14, ymm10);
-      ymm11 = _mm512_fmadd_ps(ymm12, ymm13, ymm11);
+      zmm16 = _mm512_set1_ps(*(aptr+3));
+      zmm9  = _mm512_fmadd_ps(zmm16, zmm15, zmm9);
+      zmm10 = _mm512_fmadd_ps(zmm16, zmm14, zmm10);
+      zmm11 = _mm512_fmadd_ps(zmm16, zmm13, zmm11);
 
       aptr += 4;
       bptr += 48;
@@ -55,29 +64,29 @@ inline void kernel_4x48(
 
   for (int p = 0; p != k_left; ++p)
     {
-      ymm15 = _mm512_load_ps(bptr);
-      ymm14 = _mm512_load_ps(bptr+16);
-      ymm13 = _mm512_load_ps(bptr+32);
+      zmm15 = _mm512_load_ps(bptr);
+      zmm14 = _mm512_load_ps(bptr+16);
+      zmm13 = _mm512_load_ps(bptr+32);
       
-      ymm12 = _mm512_set1_ps(*(aptr+0));
-      ymm0 = _mm512_fmadd_ps(ymm12, ymm15, ymm0);
-      ymm1 = _mm512_fmadd_ps(ymm12, ymm14, ymm1);
-      ymm2 = _mm512_fmadd_ps(ymm12, ymm13, ymm2);
+      zmm12 = _mm512_set1_ps(*(aptr+0));
+      zmm0  = _mm512_fmadd_ps(zmm12, zmm15, zmm0);
+      zmm1  = _mm512_fmadd_ps(zmm12, zmm14, zmm1);
+      zmm2  = _mm512_fmadd_ps(zmm12, zmm13, zmm2);
       
-      ymm16 = _mm512_set1_ps(*(aptr+1));  
-      ymm3 = _mm512_fmadd_ps(ymm12, ymm15, ymm3);
-      ymm4 = _mm512_fmadd_ps(ymm12, ymm14, ymm4);
-      ymm5 = _mm512_fmadd_ps(ymm12, ymm13, ymm5);
+      zmm16 = _mm512_set1_ps(*(aptr+1));  
+      zmm3  = _mm512_fmadd_ps(zmm16, zmm15, zmm3);
+      zmm4  = _mm512_fmadd_ps(zmm16, zmm14, zmm4);
+      zmm5  = _mm512_fmadd_ps(zmm16, zmm13, zmm5);
  
-      ymm12 = _mm512_set1_ps(*(aptr+2));
-      ymm6 = _mm512_fmadd_ps(ymm12, ymm15, ymm6);
-      ymm7 = _mm512_fmadd_ps(ymm12, ymm14, ymm7);
-      ymm8 = _mm512_fmadd_ps(ymm12, ymm13, ymm8);
+      zmm12 = _mm512_set1_ps(*(aptr+2));
+      zmm6  = _mm512_fmadd_ps(zmm12, zmm15, zmm6);
+      zmm7  = _mm512_fmadd_ps(zmm12, zmm14, zmm7);
+      zmm8  = _mm512_fmadd_ps(zmm12, zmm13, zmm8);
  
-      ymm16 = _mm512_set1_ps(*(aptr+3));
-      ymm9 = _mm512_fmadd_ps(ymm12, ymm15, ymm9);
-      ymm10 = _mm512_fmadd_ps(ymm12, ymm14, ymm10);
-      ymm11 = _mm512_fmadd_ps(ymm12, ymm13, ymm11);
+      zmm16 = _mm512_set1_ps(*(aptr+3));
+      zmm9  = _mm512_fmadd_ps(zmm16, zmm15, zmm9);
+      zmm10 = _mm512_fmadd_ps(zmm16, zmm14, zmm10);
+      zmm11 = _mm512_fmadd_ps(zmm16, zmm13, zmm11);
 
       aptr += 4;
       bptr += 48;
@@ -90,10 +99,10 @@ inline void kernel_4x48(
   c2 = c1 + out_channel  ; c3 = c2 + out_channel;
     
   // store outputs
-  _mm512_store_ps(c0+0, ymm0);        _mm512_store_ps(c0+8, ymm1);        _mm512_store_ps(c0+16, ymm2);
-  _mm512_store_ps(c1+0, ymm3);        _mm512_store_ps(c1+8, ymm4);        _mm512_store_ps(c1+16, ymm5);
-  _mm512_store_ps(c2+0, ymm6);        _mm512_store_ps(c2+8, ymm7);        _mm512_store_ps(c2+16, ymm8);
-  _mm512_store_ps(c3+0, ymm9);        _mm512_store_ps(c3+8, ymm10);        _mm512_store_ps(c3+16, ymm11);
+  _mm512_store_ps(c0+0, zmm0);        _mm512_store_ps(c0+16, zmm1);        _mm512_store_ps(c0+32, zmm2);
+  _mm512_store_ps(c1+0, zmm3);        _mm512_store_ps(c1+16, zmm4);        _mm512_store_ps(c1+32, zmm5);
+  _mm512_store_ps(c2+0, zmm6);        _mm512_store_ps(c2+16, zmm7);        _mm512_store_ps(c2+32, zmm8);
+  _mm512_store_ps(c3+0, zmm9);        _mm512_store_ps(c3+16, zmm10);        _mm512_store_ps(c3+32, zmm11);
 
  }
 
@@ -108,39 +117,48 @@ inline void kernel_4xR (
  int R, // value is only 8 or 16
  int out_channel
  ){
-  if ((R != 8) && (R!=16)) return;
+  if ((R != 16) && (R!=32)) return;
 
-  __m512 ymm0, ymm1, ymm2, ymm3, ymm4, ymm5, ymm6, ymm7;
-  __m512 ymm8, ymm9, ymm10, ymm11, ymm12, ymm13, ymm14, ymm15;
+  __m512 zmm0, zmm1, zmm2, zmm3, zmm4, zmm5, zmm6, zmm7;
+  __m512 zmm8, zmm9, zmm10, zmm11, zmm12, zmm13, zmm14, zmm15;
     
   float* bptr = b;
   float* aptr = a;
 
   int k_iter = k / 4;
   int k_left = k % 4;
+  
+  zmm0 = _mm512_setzero_ps();  zmm1 = _mm512_setzero_ps();
+  zmm2 = _mm512_setzero_ps();  zmm3 = _mm512_setzero_ps();
+  zmm4 = _mm512_setzero_ps();  zmm5 = _mm512_setzero_ps();
+  zmm6 = _mm512_setzero_ps();  zmm7 = _mm512_setzero_ps();
+  zmm8 = _mm512_setzero_ps();  zmm9 = _mm512_setzero_ps();
+  zmm10 = _mm512_setzero_ps();  zmm11 = _mm512_setzero_ps();
+  zmm12 = _mm512_setzero_ps();  zmm13 = _mm512_setzero_ps();
+  zmm14 = _mm512_setzero_ps();  zmm15 = _mm512_setzero_ps();
+
 
   for (int p = 0; p != k_iter; ++p) {
     #pragma unroll
     for (int i = 0; i < 4; ++i) {
-      ymm15 = _mm512_load_ps(bptr);
+      zmm15 = _mm512_load_ps(bptr);
       
-      ymm13 = _mm512_set1_ps(*(aptr+0));
-      ymm12 = _mm512_set1_ps(*(aptr+1));
-      ymm11 = _mm512_set1_ps(*(aptr+2));
-      ymm10 = _mm512_set1_ps(*(aptr+3));
+      zmm13 = _mm512_set1_ps(*(aptr+0));
+      zmm12 = _mm512_set1_ps(*(aptr+1));
+      zmm11 = _mm512_set1_ps(*(aptr+2));
+      zmm10 = _mm512_set1_ps(*(aptr+3));
       switch (R) {
         case 32: // Do Upper Channel
-          ymm14 = _mm512_load_ps(bptr+8);
-          ymm1 = _mm512_fmadd_ps(ymm13, ymm14, ymm1);
-          ymm3 = _mm512_fmadd_ps(ymm12, ymm14, ymm3);
-          ymm5 = _mm512_fmadd_ps(ymm11, ymm14, ymm5);
-          ymm7 = _mm512_fmadd_ps(ymm10, ymm14, ymm7);
-        case 16: // Fall through and do lower channel
-          ymm0 = _mm512_fmadd_ps(ymm13, ymm15, ymm0);
-          ymm2 = _mm512_fmadd_ps(ymm12, ymm15, ymm2);
-          ymm4 = _mm512_fmadd_ps(ymm11, ymm15, ymm4);
-          ymm6 = _mm512_fmadd_ps(ymm10, ymm15, ymm6);
-        default: 
+          zmm14 = _mm512_load_ps(bptr+16);
+          zmm1 = _mm512_fmadd_ps(zmm13, zmm14, zmm1);
+          zmm3 = _mm512_fmadd_ps(zmm12, zmm14, zmm3);
+          zmm5 = _mm512_fmadd_ps(zmm11, zmm14, zmm5);
+          zmm7 = _mm512_fmadd_ps(zmm10, zmm14, zmm7);
+        default: // Fall through and do lower channel
+          zmm0 = _mm512_fmadd_ps(zmm13, zmm15, zmm0);
+          zmm2 = _mm512_fmadd_ps(zmm12, zmm15, zmm2);
+          zmm4 = _mm512_fmadd_ps(zmm11, zmm15, zmm4);
+          zmm6 = _mm512_fmadd_ps(zmm10, zmm15, zmm6);
           break;
       }
       aptr += 4;
@@ -150,24 +168,24 @@ inline void kernel_4xR (
 
   for (int p = 0; p != k_left; ++p)
     {
-      ymm15 = _mm512_load_ps(bptr);
+      zmm15 = _mm512_load_ps(bptr);
       
-      ymm13 = _mm512_set1_ps(*(aptr+0));
-      ymm12 = _mm512_set1_ps(*(aptr+1));
-      ymm11 = _mm512_set1_ps(*(aptr+2));
-      ymm10 = _mm512_set1_ps(*(aptr+3));
+      zmm13 = _mm512_set1_ps(*(aptr+0));
+      zmm12 = _mm512_set1_ps(*(aptr+1));
+      zmm11 = _mm512_set1_ps(*(aptr+2));
+      zmm10 = _mm512_set1_ps(*(aptr+3));
       switch (R) {
         case 32: 
-          ymm14 = _mm512_load_ps(bptr+8);
-          ymm1 = _mm512_fmadd_ps(ymm13, ymm14, ymm1);
-          ymm3 = _mm512_fmadd_ps(ymm12, ymm14, ymm3);
-          ymm5 = _mm512_fmadd_ps(ymm11, ymm14, ymm5);
-          ymm7 = _mm512_fmadd_ps(ymm10, ymm14, ymm7);
+          zmm14 = _mm512_load_ps(bptr+16);
+          zmm1 = _mm512_fmadd_ps(zmm13, zmm14, zmm1);
+          zmm3 = _mm512_fmadd_ps(zmm12, zmm14, zmm3);
+          zmm5 = _mm512_fmadd_ps(zmm11, zmm14, zmm5);
+          zmm7 = _mm512_fmadd_ps(zmm10, zmm14, zmm7);
         case 16:
-          ymm0 = _mm512_fmadd_ps(ymm13, ymm15, ymm0);
-          ymm2 = _mm512_fmadd_ps(ymm12, ymm15, ymm2);
-          ymm4 = _mm512_fmadd_ps(ymm11, ymm15, ymm4);
-          ymm6 = _mm512_fmadd_ps(ymm10, ymm15, ymm6);
+          zmm0 = _mm512_fmadd_ps(zmm13, zmm15, zmm0);
+          zmm2 = _mm512_fmadd_ps(zmm12, zmm15, zmm2);
+          zmm4 = _mm512_fmadd_ps(zmm11, zmm15, zmm4);
+          zmm6 = _mm512_fmadd_ps(zmm10, zmm15, zmm6);
         default:
           break;
       }
@@ -185,16 +203,15 @@ inline void kernel_4xR (
   // store outputs
   switch (R) {
     case 32: 
-      _mm512_store_ps(c0+8, ymm1);        
-      _mm512_store_ps(c1+8, ymm3);      
-      _mm512_store_ps(c2+8, ymm5);      
-      _mm512_store_ps(c3+8, ymm7);        
-    case 16: // store lower channel
-      _mm512_store_ps(c0, ymm0);        
-      _mm512_store_ps(c1, ymm2);      
-      _mm512_store_ps(c2, ymm4);      
-      _mm256_store_ps(c3, ymm6);        
+      _mm512_store_ps(c0+16, zmm1);        
+      _mm512_store_ps(c1+16, zmm3);      
+      _mm512_store_ps(c2+16, zmm5);      
+      _mm512_store_ps(c3+16, zmm7);        
     default: // store lower channel
+      _mm512_store_ps(c0, zmm0);        
+      _mm512_store_ps(c1, zmm2);      
+      _mm512_store_ps(c2, zmm4);      
+      _mm512_store_ps(c3, zmm6);        
       break;
   }  
 }

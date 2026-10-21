@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "../include/conv2D.h"
+#include "../include/conv2D_512.h"
 #include "../include/silu.h"
 
 #define CHECK(condition, message)                                      \
@@ -30,7 +30,7 @@ static int close_enough(float actual, float expected, float atol, float rtol)
 
 static int test_silu(void)
 {
-    const int H = 1, W = 7, C = 8;
+    const int H = 1, W = 7, C = 16;
     const int count = H * W * C;
     float *input = (float *)_mm_malloc((size_t)count * sizeof(float), 32);
 
@@ -97,7 +97,7 @@ static int test_conv_1x1(void)
 
 static int test_conv_3x3(void)
 {
-    const int H = 20, W = 16, IC = 15, OC = 16, stride = 2;
+    const int H = 20, W = 16, IC = 16, OC = 16, stride = 2;
     const int output_h = (H - 1) / stride + 1;
     const int output_w = (W - 1) / stride + 1;
     const int pixels = H * W;
