@@ -55,3 +55,6 @@ dkms.conf
 *.dwo
 
 convolution_old.c
+include/conv2D_256.h
+include/mmm_4x24.h
+include/silu_512.h

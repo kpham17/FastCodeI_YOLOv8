@@ -15,15 +15,19 @@ float *conv_layer(
 {    
     float *w_input = input;
     if (input_C % 8 != 0){
-        w_input = padinput_8x(input, H, W, input_C);
+        w_input = padinput_16x(input, H, W, input_C);
     } 
 
     float *conv2d_output;
     if (kernel_size == 3){ // Assumes that padding = 1 for kernel_size = 3
-        conv2d_output = conv_3x3(w_input, H, W, input_C, kernel, output_C, stride);
+        float *packed_kernel = kernel_pack(kernel, input_C*9, output_C);    
+        conv2d_output = conv_3x3(w_input, H, W, input_C, packed_kernel, output_C, stride);
+        _mm_free(packed_kernel);
     }
     else if (kernel_size == 1){ // Assumes that padding = 0 and stride = 1 for kernel_size = 1
-        conv2d_output = conv_1x1(w_input, H, W, output_C,kernel, output_C);
+        float *packed_kernel = kernel_pack(kernel, input_C, output_C);    
+        conv2d_output = conv_1x1(w_input, H, W, output_C, packed_kernel, output_C);
+        _mm_free(packed_kernel);
     }
 
     if (input_C % 8 != 0){

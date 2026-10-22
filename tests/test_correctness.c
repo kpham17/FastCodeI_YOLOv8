@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "../include/conv2D_512.h"
+#include "../include/conv2D.h"
 #include "../include/silu.h"
 
 #define CHECK(condition, message)                                      \
@@ -32,7 +32,8 @@ static int test_silu(void)
 {
     const int H = 1, W = 7, C = 16;
     const int count = H * W * C;
-    float *input = (float *)_mm_malloc((size_t)count * sizeof(float), 32);
+    float *input = (float *)_mm_malloc(count * sizeof(float), 64);
+    float* actual = (float *)_mm_malloc(count * sizeof(float), 64);   
 
     CHECK(input != NULL, "allocate SiLU input");
 
@@ -40,9 +41,9 @@ static int test_silu(void)
         input[i] = -6.0f + 12.0f * (float)i / (float)(count - 1);
     }
 
-    float *actual = fast_SILU(input, H, W, C);
+    taylor_SILU(input, H, W, C, actual);
     CHECK(actual != NULL, "fast_SILU returned NULL");
-
+    
     for (int i = 0; i < count; ++i) {
         const float x = input[i];
         const float expected = x / (1.0f + expf(-x));
@@ -71,8 +72,12 @@ static int test_conv_1x1(void)
     for (int i = 0; i < pixels * IC; ++i) input[i] = test_value(i);
     for (int i = 0; i < IC * OC; ++i) kernel[i] = test_value(i + 3);
 
+
+    float *packed_kernel = kernel_pack(kernel, IC, OC);      
     float *actual = conv_1x1(input, H, W, IC, kernel, OC);
     CHECK(actual != NULL, "conv_1x1 returned NULL");
+    _mm_free(packed_kernel);
+
 
     for (int p = 0; p < pixels; ++p) {
         for (int oc = 0; oc < OC; ++oc) {
@@ -97,20 +102,20 @@ static int test_conv_1x1(void)
 
 static int test_conv_3x3(void)
 {
-    const int H = 20, W = 16, IC = 16, OC = 16, stride = 2;
+    const int H = 20, W = 20, IC = 256, OC = 256, stride = 1;
     const int output_h = (H - 1) / stride + 1;
     const int output_w = (W - 1) / stride + 1;
     const int pixels = H * W;
-    const int resized_IC = (IC +7)/8*8;
+    const int resized_IC = (IC +15)/16*16;
     const int kernel_count = 3 * 3 * IC * OC;
     const int resized_kernel_count = 3 * 3 * resized_IC * OC;
 
     float *input = (float *)_mm_malloc(
-        (size_t)pixels * IC * sizeof(float), 32);
+        (size_t)pixels * IC * sizeof(float), 64);
     float *kernel = (float *)_mm_malloc(
-        (size_t)kernel_count * sizeof(float), 32);
+        (size_t)kernel_count * sizeof(float), 64);
     float *kernel_resized = (float *)_mm_malloc(
-        (size_t)resized_kernel_count * sizeof(float), 32);
+        (size_t)resized_kernel_count * sizeof(float), 64);
     memset(kernel_resized, 0, resized_kernel_count * sizeof(float));
         
     float *w_input = input;
@@ -120,7 +125,7 @@ static int test_conv_3x3(void)
     for (int i = 0; i < kernel_count; ++i) kernel[i] = test_value(i + 9);
     
     if (IC != resized_IC){
-        w_input = padinput_8x(input, H, W, IC);
+        w_input = padinput_16x(input, H, W, IC);
     } 
 
     
@@ -140,10 +145,13 @@ static int test_conv_3x3(void)
         }
     }
     }
-
-    float *actual = conv_3x3(w_input, H, W, resized_IC, kernel_resized, OC, stride);
-    CHECK(actual != NULL, "conv_3x3 returned NULL");
     
+    float *packed_kernel = kernel_pack(kernel_resized, resized_IC * 9, OC);    
+
+    float *actual = conv_3x3(w_input, H, W, resized_IC, packed_kernel, OC, stride);
+    CHECK(actual != NULL, "conv_3x3 returned NULL");
+    _mm_free(packed_kernel);
+
     if (IC % 8 != 0){
         _mm_free(w_input);
     }
