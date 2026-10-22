@@ -1,2 +1,28 @@
 # FastCodeI_YOLOv8
 YOLOv8 implementation
+
+## Batchnorm and maxpooling skeletons
+
+The C APIs use NHWC tensors:
+
+- [`include/batchnorm.h`](include/batchnorm.h)
+- [`include/maxpool.h`](include/maxpool.h)
+
+The current implementations are explicit skeletons that return an error until
+the kernels are designed. Build the shared library with:
+
+```sh
+make kernels
+```
+
+After implementing the two functions, compare runtime and analytic FLOP
+estimates against PyTorch:
+
+```sh
+.venv/bin/python benchmarks/compare_kernels.py \
+    --library kernels/libfastkernels.so
+```
+
+The benchmark uses batchnorm inference with running statistics and 2x2
+maxpooling with stride 2. Customize the workload with `--shape N H W C`,
+`--warmups`, and `--repeats`.

@@ -1,6 +1,17 @@
 # Prerequisites
 *.d
 
+# Local Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Benchmark and build artifacts
+test_correctness.x
+benchmarks/*.json
+benchmarks/*.csv
+
 # Object files
 *.o
 *.ko
