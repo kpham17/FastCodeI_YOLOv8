@@ -31,5 +31,12 @@ maxpooling with stride 2. Customize the workload with `--shape N H W C`,
 
 Consume C2f channel chunks without a separate chunk-copy pass using
 `conv_3x3_strided` in `include/conv2D.h`. See
-[STRIDED_CONVOLUTION.md](STRIDED_CONVOLUTION.md) for the API,
+[STRIDED_CONVOLUTION.md](docs/STRIDED_CONVOLUTION.md) for the API,
 correctness tests, and a copy-plus-convolution benchmark.
+
+## Fused NHWC AVX2 upsample and concatenate
+
+Combine 2x nearest-neighbor upsampling and skip concatenation in one AVX2 pass
+with `fused_upconcat_a` and `fused_upconcat_b`. See the
+[API and testing guide](docs/nhwc_avx2_upconcat.md) and
+[ece020 benchmark results](docs/nhwc_avx2_ece020_20261022.md).

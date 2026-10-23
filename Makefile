@@ -1,16 +1,22 @@
 CC ?= gcc
 CFLAGS ?= -std=c11 -march=native -O3  -mavx2 -mfma 
 LDLIBS ?= -lm
+PYTHON ?= python3
+# Preserve the supplied AVX2 build independently of the AVX-512 convolution.
+UPCONCAT_CFLAGS ?= -O3 -std=c11 -march=native -mno-avx512f -mno-avx512vl -Wall -Wextra -Wpedantic
+UPCONCAT_LIB = kernels/libfused_upconcat.so
+UPCONCAT_SRC = kernels/fused_upconcat.c
+UPCONCAT_HEADERS = include/fused_upconcat.h
 
-TEST_BIN = test_correctness.x test_conv_strided.x benchmark.x
+TEST_BIN = test_correctness.x test_conv_strided.x test_fused_upconcat.x benchmark.x
 HEADERS = include/conv2D.h include/silu.h include/mmm_4x48.h
 KERNEL_LIB = kernels/libfastkernels.so
 KERNEL_SRC = kernels/batchnorm_maxpool_skeleton.c
 KERNEL_HEADERS = include/batchnorm.h include/maxpool.h
 
-.PHONY: all test kernels benchmark-strided clean
+.PHONY: all test kernels benchmark-strided check-upconcat benchmark-upconcat clean
 
-all: $(TEST_BIN)
+all: $(TEST_BIN) $(UPCONCAT_LIB)
 
 test_correctness.x: tests/test_correctness.c $(HEADERS)
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
@@ -27,7 +33,22 @@ benchmark-strided: benchmark_conv_strided.x
 benchmark.x: tests/benchmark.c $(HEADERS)
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
 
-kernels: $(KERNEL_LIB)
+kernels: $(KERNEL_LIB) $(UPCONCAT_LIB)
+
+$(UPCONCAT_LIB): $(UPCONCAT_SRC) $(UPCONCAT_HEADERS)
+	$(CC) $(UPCONCAT_CFLAGS) -Iinclude -shared -fPIC $(UPCONCAT_SRC) -o $@
+
+test_fused_upconcat.x: tests/test_fused_upconcat.c $(UPCONCAT_SRC) $(UPCONCAT_HEADERS)
+	$(CC) $(UPCONCAT_CFLAGS) -Iinclude -o $@ tests/test_fused_upconcat.c $(UPCONCAT_SRC)
+
+check-upconcat: $(UPCONCAT_LIB)
+	$(PYTHON) benchmarks/compare_fused_upconcat.py --check
+
+benchmark-upconcat: $(UPCONCAT_LIB)
+	$(PYTHON) benchmarks/compare_fused_upconcat.py --run 1
+	$(PYTHON) benchmarks/compare_fused_upconcat.py --run 2
+	$(PYTHON) benchmarks/compare_fused_upconcat.py --run 3
+	$(PYTHON) benchmarks/compare_fused_upconcat.py --report
 
 $(KERNEL_LIB): $(KERNEL_SRC) $(KERNEL_HEADERS)
 	$(CC) $(CFLAGS) -fPIC -shared -o $@ $(KERNEL_SRC)
@@ -35,7 +56,8 @@ $(KERNEL_LIB): $(KERNEL_SRC) $(KERNEL_HEADERS)
 test: $(TEST_BIN)
 	./test_correctness.x
 	./test_conv_strided.x
+	./test_fused_upconcat.x
 	./benchmark.x
 
 clean:
-	rm -f $(TEST_BIN) benchmark_conv_strided.x $(KERNEL_LIB)
+	rm -f $(TEST_BIN) benchmark_conv_strided.x $(KERNEL_LIB) $(UPCONCAT_LIB)
