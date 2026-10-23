@@ -1,5 +1,7 @@
 #include <immintrin.h>
 #include <stdbool.h>
+#include <limits.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "mmm_4x48.h"
@@ -323,6 +325,158 @@ float *conv_3x3(
 
     return output;
 
+}
+
+// Channel-strided input gatherer; preserves the existing window layout.
+static inline void im2window3x3_strided(
+    const float *restrict input,
+    int H, // Height of Input Image
+    int W, // Width of Input Image
+    int C, // Number of Input Channels (multiple of 8)
+    int stride, // Number of Strides
+    float *restrict output, // Output
+    int output_h, // Which output row to create
+    int input_pixel_stride, // Physical channels per NHWC pixel
+    int channel_offset // First selected channel
+)
+{
+    int c_iters = (C / 8) / 4;
+    int c_left  = (C / 8) % 4;
+    float *ptr = output; // moving pointer for output
+    bool h_out, w_out;
+    int input_h = output_h * stride - 1; // Where to start initially
+    int curr_h;
+    for (int w = -1; w < W + 1; ++w) { // Iterate width (include padding)
+        #pragma unroll
+        for (int r = 0; r < 3; ++r) { // Iterate through 3 rows
+            curr_h = input_h + r;
+            h_out = (curr_h < 0 || curr_h >= H);
+            w_out = (w < 0 || w >= W);
+
+            // Only possible if Channel is a multiple of 8
+            if (h_out || w_out) {
+                // Out of bounds (padding region): fill with zeros
+                // Some unrolling
+                #pragma unroll
+                for (int c = 0; c < c_iters; ++c) {
+                    _mm256_store_ps(ptr + 0, _mm256_setzero_ps());
+                    _mm256_store_ps(ptr + 8, _mm256_setzero_ps());
+                    _mm256_store_ps(ptr + 16, _mm256_setzero_ps());
+                    _mm256_store_ps(ptr + 24, _mm256_setzero_ps());
+                    ptr += 32;
+                }
+                for (int c = 0; c < c_left; ++c) {
+                    _mm256_store_ps(ptr + 0, _mm256_setzero_ps());
+                    ptr += 8;
+                }
+                //Iterates ptr all the way to next voxel
+            }
+            else {
+                // Within bounds: load directly from the NHWC input tensor
+                const float *row_ptr = input + ((size_t)curr_h * W + w)
+                                     * input_pixel_stride + channel_offset;
+                // Some loop unrolling
+                #pragma unroll
+                for (int c = 0; c < c_iters; ++c) {
+                    _mm256_store_ps(ptr + 0, _mm256_loadu_ps(row_ptr + 0));
+                    _mm256_store_ps(ptr + 8, _mm256_loadu_ps(row_ptr + 8));
+                    _mm256_store_ps(ptr + 16, _mm256_loadu_ps(row_ptr + 16));
+                    _mm256_store_ps(ptr + 24, _mm256_loadu_ps(row_ptr + 24));
+                    ptr += 32;
+                    row_ptr += 32;
+                }
+                for (int c = 0; c < c_left; ++c) {
+                    _mm256_store_ps(ptr + 0, _mm256_loadu_ps(row_ptr + 0));
+                    ptr += 8;
+                    row_ptr += 8;
+                }
+            }
+        }
+    }
+}
+
+// Convolve a channel slice of a dense NHWC parent without copying the chunk.
+// input points to the parent tensor; addresses are
+// input[(h * W + w) * input_pixel_stride + channel_offset + c].
+// input_C is the selected channel count (multiple of 8); output_C must be a
+// multiple of 16, as required by the AVX-512 4x48/4xR kernels. kernel must be
+// produced by kernel_pack(raw_weights, 9 * input_C, output_C), using only the
+// selected channels and the existing kw -> kh -> channel ordering.
+// stride is the SPATIAL convolution stride; input_pixel_stride is in floats.
+// Returns a contiguous, 64-byte-aligned NHWC allocation, released by _mm_free.
+// Returns NULL for invalid shapes/strides/channel slices or allocation failure.
+// This eliminates the separate chunk copy; im2window/A packing still occurs.
+static inline float *conv_3x3_strided(
+    const float *restrict input,
+    int H,
+    int W,
+    int input_C,
+    float *restrict kernel,
+    int output_C,
+    int stride,
+    int input_pixel_stride,
+    int channel_offset)
+{
+    if (!input || !kernel || H <= 0 || W <= 0 || input_C <= 0 ||
+        input_C % 8 != 0 || input_C > INT_MAX / 9 || output_C <= 0 ||
+        output_C % 16 != 0 || stride <= 0 || channel_offset < 0 ||
+        input_pixel_stride < input_C ||
+        channel_offset > input_pixel_stride - input_C)
+        return NULL;
+
+    int output_h = (H - 1) / stride + 1;
+    int output_w = (W - 1) / stride + 1;
+    int CK2 = 9 * input_C;
+    // Extra zero columns make all four window reads safe on the final tile.
+    size_t window_columns = (size_t)W + 2 + 3 * (size_t)stride;
+    // get_mmm_window_3x3 uses int offsets, so bound its intermediate products.
+    if (window_columns > (size_t)INT_MAX / (3 * input_C) ||
+        (size_t)H > SIZE_MAX / (size_t)W / (size_t)input_pixel_stride / sizeof(float) ||
+        (size_t)output_h > SIZE_MAX / (size_t)output_w / (size_t)output_C / sizeof(float) ||
+        (size_t)CK2 > SIZE_MAX / 4 / sizeof(float) ||
+        (size_t)output_C > SIZE_MAX / 4 / sizeof(float))
+        return NULL;
+
+    size_t output_count = (size_t)output_h * output_w * output_C;
+    size_t window_count = window_columns * input_C * 3;
+    float *output = _mm_malloc(output_count * sizeof(float), 64);
+    float *im2window_buffer = _mm_malloc(window_count * sizeof(float), 64);
+    float *A_buffer = _mm_malloc((size_t)4 * CK2 * sizeof(float), 64);
+    float *tail = output_w % 4 ?
+        _mm_malloc((size_t)4 * output_C * sizeof(float), 64) : NULL;
+    if (!output || !im2window_buffer || !A_buffer || (output_w % 4 && !tail)) {
+        _mm_free(output); _mm_free(im2window_buffer);
+        _mm_free(A_buffer); _mm_free(tail);
+        return NULL;
+    }
+    size_t written_count = ((size_t)W + 2) * input_C * 3;
+    memset(im2window_buffer + written_count, 0,
+           (window_count - written_count) * sizeof(float));
+
+    for (int h = 0; h < output_h; ++h) {
+        im2window3x3_strided(input, H, W, input_C, stride, im2window_buffer,
+                            h, input_pixel_stride, channel_offset);
+        for (int i = 0; i < output_w; i += 4) {
+            int valid = output_w - i < 4 ? output_w - i : 4;
+            float *destination = output + ((size_t)h * output_w + i) * output_C;
+            float *tile = valid == 4 ? destination : tail;
+            float *output_ptr = tile;
+            float *kernel_ptr = kernel;
+            get_mmm_window_3x3(im2window_buffer, input_C, stride, i, A_buffer);
+            for (int c = 0; c < output_C / 48; ++c) {
+                kernel_4x48(CK2, A_buffer, kernel_ptr, output_ptr, output_C);
+                output_ptr += 48;
+                kernel_ptr += (size_t)CK2 * 48;
+            }
+            if (output_C % 48)
+                kernel_4xR(CK2, A_buffer, kernel_ptr, output_ptr,
+                           output_C % 48, output_C);
+            if (valid != 4)
+                memcpy(destination, tile, (size_t)valid * output_C * sizeof(float));
+        }
+    }
+    _mm_free(im2window_buffer); _mm_free(A_buffer); _mm_free(tail);
+    return output;
 }
 
 // Performs Conv2D for Kernel size of 1.

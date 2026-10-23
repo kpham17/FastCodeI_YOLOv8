@@ -69,3 +69,8 @@ convolution_old.c
 include/conv2D_256.h
 include/mmm_4x24.h
 include/silu_512.h
+
+# Convolution test and benchmark executables
+benchmark.x
+test_conv_strided.x
+benchmark_conv_strided.x

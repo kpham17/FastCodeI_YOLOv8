@@ -26,3 +26,10 @@ estimates against PyTorch:
 The benchmark uses batchnorm inference with running statistics and 2x2
 maxpooling with stride 2. Customize the workload with `--shape N H W C`,
 `--warmups`, and `--repeats`.
+
+## Channel-strided convolution
+
+Consume C2f channel chunks without a separate chunk-copy pass using
+`conv_3x3_strided` in `include/conv2D.h`. See
+[STRIDED_CONVOLUTION.md](STRIDED_CONVOLUTION.md) for the API,
+correctness tests, and a copy-plus-convolution benchmark.
