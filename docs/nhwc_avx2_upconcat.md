@@ -1,8 +1,9 @@
 # Fused NHWC AVX2 upsample and concatenate
 
-Imported from the supplied `nhwc_avx2_code.zip`. The C implementation and public
-header are preserved byte for byte. The Python harness keeps the supplied
-correctness checks and timing protocol, with paths adapted to this repository.
+Initially imported from the supplied `nhwc_avx2_code.zip`. Stage B now uses
+QUAD order, with the same public API and buffer layout. Stage A is unchanged.
+The Python harness keeps the supplied correctness checks and timing protocol,
+with paths adapted to this repository.
 
 | File | Purpose |
 |---|---|
@@ -10,7 +11,7 @@ correctness checks and timing protocol, with paths adapted to this repository.
 | `kernels/fused_upconcat.c` | AVX2 implementation |
 | `tests/test_fused_upconcat.c` | Native bit-pattern and buffer-boundary checks |
 | `benchmarks/compare_fused_upconcat.py` | PyTorch checks and three-run benchmark |
-| `docs/nhwc_avx2_ece020_20261022.md` | Verified ece020 measurements |
+| `docs/nhwc_avx2_ece020_20261022.md` | Historical ece020 measurements |
 
 The kernel performs 2x nearest-neighbor upsampling and channel concatenation in
 one pass. All buffers use contiguous FP32 NHWC storage. Channels are ordered
@@ -20,6 +21,11 @@ one pass. All buffers use contiguous FP32 NHWC storage. Channels are ordered
   This corresponds to YOLOv8n layers 10+11.
 - `fused_upconcat_b`: 128 upsample channels + 64 skip channels; output 192.
   This corresponds to YOLOv8n layers 13+14.
+
+Both stages use QUAD order: each source pixel supplies a 2x2 output group.
+Stage B loads its 128 source channels once, copies them to all four output
+pixels, then copies each pixel's own skip channels. The output remains
+contiguous NHWC with channels ordered `[upsampled, skip]`.
 
 ```c
 #include "fused_upconcat.h"
@@ -88,5 +94,6 @@ upsampling plus concatenate against the fused AVX2 function. Both paths use
 preallocated output; PyTorch also uses a preallocated upsample intermediate.
 These timings cover the two operations, rather than the complete model.
 
-A fresh verification of this integration is recorded in
-[the ece020 report](nhwc_avx2_ece020_20261022.md).
+The original integration's verification and measurements are recorded in
+[the historical ece020 report](nhwc_avx2_ece020_20261022.md). That report used
+ROW order for stage B; its timings have not been updated for QUAD order.

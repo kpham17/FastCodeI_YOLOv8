@@ -13,7 +13,8 @@
 void fused_upconcat_a(const float *up, const float *skip, float *out,
                       size_t h, size_t w);
 
-/* YOLOv8n layers 13+14: Cu=128, Cs=64, output channels=192. */
+/* YOLOv8n layers 13+14: Cu=128, Cs=64, output channels=192.
+ * QUAD order: read each source pixel once and write its 2x2 output group. */
 void fused_upconcat_b(const float *up, const float *skip, float *out,
                       size_t h, size_t w);
 

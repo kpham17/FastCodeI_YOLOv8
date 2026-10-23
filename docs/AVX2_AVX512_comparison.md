@@ -1,5 +1,9 @@
 # ece020: keep the minimal AVX2 production kernels
 
+This report describes the original measured variants. Its AVX2 stage B used
+ROW order. The current production stage B uses QUAD order with the same API;
+the measurements below have not been updated for that change.
+
 **Recommendation: retain MINIMAL_AVX2 for both stages and all three image sizes.** Neither full-width AVX-512 candidate provides a repeatable, material improvement that justifies a shape-specific dispatch. The requested experiment is complete; the source baseline was preserved unchanged.
 
 The primary controlled session and a separate confirmation session each contain three independent processes. Every process measured all six shapes with 21 randomized/interleaved rounds, four warmup calls and five timed calls per candidate. Together they contain 2,268 round samples and 11,340 timed complete fused calls. These are warmed-buffer operator measurements, not end-to-end YOLO inference.

@@ -37,6 +37,7 @@ correctness tests, and a copy-plus-convolution benchmark.
 ## Fused NHWC AVX2 upsample and concatenate
 
 Combine 2x nearest-neighbor upsampling and skip concatenation in one AVX2 pass
-with `fused_upconcat_a` and `fused_upconcat_b`. See the
+with `fused_upconcat_a` and `fused_upconcat_b`. Both stages use QUAD order:
+each source pixel supplies a 2x2 group of output pixels. See the
 [API and testing guide](docs/nhwc_avx2_upconcat.md) and
-[ece020 benchmark results](docs/nhwc_avx2_ece020_20261022.md).
+[historical ece020 benchmark results](docs/nhwc_avx2_ece020_20261022.md).

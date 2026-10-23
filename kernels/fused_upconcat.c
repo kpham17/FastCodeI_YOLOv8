@@ -60,25 +60,32 @@ void fused_upconcat_a(const float *restrict up, const float *restrict skip,
     }
 }
 
-/* Stage B: ROW order. Complete one output row at a time for more sequential
- * stores; source pixels are reread for the second row, generally from cache. */
+/* Stage B: QUAD order. Load each source pixel once, then write its four
+ * output pixels before copying their distinct skip channels. */
 void fused_upconcat_b(const float *restrict up, const float *restrict skip,
                       float *restrict out, size_t h, size_t w) {
     enum { CU=128, CS=64, CO=CU+CS };
     const size_t out_row=2*w*CO, skip_row=2*w*CS;
-    for (size_t y=0; y<h; ++y) for (size_t dy=0; dy<2; ++dy) {
-        float *o=out+(2*y+dy)*out_row;
-        const float *s=skip+(2*y+dy)*skip_row;
+    for (size_t y=0; y<h; ++y) {
+        float *top=out+2*y*out_row, *bottom=top+out_row;
+        const float *st=skip+2*y*skip_row, *sb=st+skip_row;
         for (size_t x=0; x<w; ++x) {
             const float *u=up+(y*w+x)*CU;
-            float *a=o+2*x*CO, *b=a+CO;
-            const float *sa=s+2*x*CS;
+            float *a=top+2*x*CO, *b=a+CO;
+            float *c=bottom+2*x*CO, *d=c+CO;
+            const float *sa=st+2*x*CS, *sc=sb+2*x*CS;
             LOAD_128(u);
             STORE_128(a);
             __asm__ __volatile__("" ::: "memory"); /* Preserve tested store order. */
             STORE_128(b);
+            __asm__ __volatile__("" ::: "memory");
+            STORE_128(c);
+            __asm__ __volatile__("" ::: "memory");
+            STORE_128(d);
             COPY_SKIP(a+CU,sa,CS);
             COPY_SKIP(b+CU,sa+CS,CS);
+            COPY_SKIP(c+CU,sc,CS);
+            COPY_SKIP(d+CU,sc+CS,CS);
         }
     }
 }
