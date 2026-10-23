@@ -94,7 +94,10 @@ static int check_case(size_t h, size_t w, int stage, size_t offset)
 
 int main(void)
 {
-    const size_t shapes[][2] = {{0,0},{0,3},{3,0},{1,1},{1,5},{3,1},{3,5}};
+    const size_t shapes[][2] = {
+        {0,0},{0,3},{3,0},{1,1},{1,5},{3,1},{3,5},
+        {20,20},{32,32},{40,40},{64,64},{128,128}
+    };
     size_t cases = 0;
     for (int stage = 0; stage < 2; ++stage)
         for (size_t i = 0; i < sizeof(shapes) / sizeof(shapes[0]); ++i)
@@ -102,6 +105,6 @@ int main(void)
                 if (check_case(shapes[i][0], shapes[i][1], stage, offset)) return 1;
                 ++cases;
             }
-    printf("PASS: %zu fused NHWC AVX2 bit-pattern, rectangular/empty-shape, alignment and boundary cases\n", cases);
+    printf("PASS: %zu fused NHWC VL_MIXED bit-pattern, rectangular/empty-shape, alignment and boundary cases\n", cases);
     return 0;
 }

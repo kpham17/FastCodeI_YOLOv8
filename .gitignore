@@ -75,6 +75,7 @@ benchmark.x
 test_conv_strided.x
 benchmark_conv_strided.x
 
-# Fused NHWC AVX2 build and generated measurements
+# Fused NHWC upconcat build and generated measurements
 test_fused_upconcat.x
 benchmarks/results/nhwc_avx2/
+benchmarks/results/nhwc_vl/

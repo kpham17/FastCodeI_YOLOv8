@@ -1,9 +1,14 @@
 #include "fused_upconcat.h"
 #include <immintrin.h>
 
-/* Unaligned 256-bit moves preserve every FP32 bit (including NaN payloads).
- * Keep 128 source channels (16 YMM registers) live and replicate them before
- * loading the next block. This is the measured AVX2 register-block strategy. */
+#if !defined(__AVX512F__) || !defined(__AVX512VL__)
+#error "fused_upconcat requires AVX-512F and AVX-512VL build flags"
+#endif
+
+/* VL_MIXED: 256-bit moves with access to YMM0-31. Keep 128 source
+ * channels live while copying each pixel's skip channels with spare registers.
+ * Integer moves preserve every FP32 bit, including NaN payloads. */
+#define ORDER() __asm__ __volatile__("" ::: "memory")
 #define LOAD(P) _mm256_loadu_si256((const __m256i *)(const void *)(P))
 #define STORE(P,V) _mm256_storeu_si256((__m256i *)(void *)(P),(V))
 #define LOAD_128(P) \
@@ -28,8 +33,15 @@
     } \
 } while(0)
 
-/* Stage A: QUAD order. Load each 128-channel input block only once, then
- * store it into all four output pixels before copying their distinct skips. */
+/* Complete this source block, then append the pixel's skip suffix.
+ * ORDER is a compiler barrier, not a CPU fence. */
+#define STORE_PIXEL(D,K,S,N) do { \
+    STORE_128((D)+(K)); ORDER(); \
+    COPY_SKIP((D)+(K)+128,(S),(N)); ORDER(); \
+} while(0)
+
+/* Stage A: write the first 128 channels to all four output pixels, then
+ * interleave the second half and skips. Each source block is read once. */
 void fused_upconcat_a(const float *restrict up, const float *restrict skip,
                       float *restrict out, size_t h, size_t w) {
     enum { CU=256, CS=128, CO=CU+CS };
@@ -42,26 +54,26 @@ void fused_upconcat_a(const float *restrict up, const float *restrict skip,
             float *a=top+2*x*CO, *b=a+CO;
             float *c=bottom+2*x*CO, *d=c+CO;
             const float *sa=st+2*x*CS, *sc=sb+2*x*CS;
-            for (size_t k=0; k<CU; k+=128) {
-                LOAD_128(u+k);
-                STORE_128(a+k);
-                __asm__ __volatile__("" ::: "memory"); /* Preserve tested store order. */
-                STORE_128(b+k);
-                __asm__ __volatile__("" ::: "memory");
-                STORE_128(c+k);
-                __asm__ __volatile__("" ::: "memory");
-                STORE_128(d+k);
+            {
+                LOAD_128(u); ORDER();
+                STORE_128(a); ORDER();
+                STORE_128(b); ORDER();
+                STORE_128(c); ORDER();
+                STORE_128(d); ORDER();
             }
-            COPY_SKIP(a+CU,sa,CS);
-            COPY_SKIP(b+CU,sa+CS,CS);
-            COPY_SKIP(c+CU,sc,CS);
-            COPY_SKIP(d+CU,sc+CS,CS);
+            {
+                LOAD_128(u+128); ORDER();
+                STORE_PIXEL(a,128,sa,CS);
+                STORE_PIXEL(b,128,sa+CS,CS);
+                STORE_PIXEL(c,128,sc,CS);
+                STORE_PIXEL(d,128,sc+CS,CS);
+            }
         }
     }
 }
 
-/* Stage B: QUAD order. Load each source pixel once, then write its four
- * output pixels before copying their distinct skip channels. */
+/* Stage B: keep the whole source pixel live across all four skip copies.
+ * Store A up, A skip, B up, B skip, C up, C skip, D up, D skip. */
 void fused_upconcat_b(const float *restrict up, const float *restrict skip,
                       float *restrict out, size_t h, size_t w) {
     enum { CU=128, CS=64, CO=CU+CS };
@@ -74,18 +86,11 @@ void fused_upconcat_b(const float *restrict up, const float *restrict skip,
             float *a=top+2*x*CO, *b=a+CO;
             float *c=bottom+2*x*CO, *d=c+CO;
             const float *sa=st+2*x*CS, *sc=sb+2*x*CS;
-            LOAD_128(u);
-            STORE_128(a);
-            __asm__ __volatile__("" ::: "memory"); /* Preserve tested store order. */
-            STORE_128(b);
-            __asm__ __volatile__("" ::: "memory");
-            STORE_128(c);
-            __asm__ __volatile__("" ::: "memory");
-            STORE_128(d);
-            COPY_SKIP(a+CU,sa,CS);
-            COPY_SKIP(b+CU,sa+CS,CS);
-            COPY_SKIP(c+CU,sc,CS);
-            COPY_SKIP(d+CU,sc+CS,CS);
+            LOAD_128(u); ORDER();
+            STORE_PIXEL(a,0,sa,CS);
+            STORE_PIXEL(b,0,sa+CS,CS);
+            STORE_PIXEL(c,0,sc,CS);
+            STORE_PIXEL(d,0,sc+CS,CS);
         }
     }
 }

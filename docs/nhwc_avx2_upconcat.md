@@ -1,31 +1,32 @@
-# Fused NHWC AVX2 upsample and concatenate
+# Fused NHWC upsample and concatenate: VL_MIXED
 
-Initially imported from the supplied `nhwc_avx2_code.zip`. Stage B now uses
-QUAD order, with the same public API and buffer layout. Stage A is unchanged.
-The Python harness keeps the supplied correctness checks and timing protocol,
-with paths adapted to this repository.
+The kernel combines 2x nearest-neighbor upsampling and channel concatenation.
+It uses **256-bit vector moves** and **AVX-512VL's extra YMM registers**.
+AVX-512F and AVX-512VL are required; there is no AVX2 fallback or CPU dispatcher.
 
-| File | Purpose |
-|---|---|
-| `include/fused_upconcat.h` | Public C API and buffer contract |
-| `kernels/fused_upconcat.c` | AVX2 implementation |
-| `tests/test_fused_upconcat.c` | Native bit-pattern and buffer-boundary checks |
-| `benchmarks/compare_fused_upconcat.py` | PyTorch checks and three-run benchmark |
-| `docs/nhwc_avx2_ece020_20261022.md` | Historical ece020 measurements |
+## API and store order
 
-The kernel performs 2x nearest-neighbor upsampling and channel concatenation in
-one pass. All buffers use contiguous FP32 NHWC storage. Channels are ordered
-`[upsampled, skip]`. The caller allocates the output; the kernel allocates nothing.
+All buffers are contiguous FP32 NHWC. Channels are `[upsampled, skip]`.
+The caller allocates the output; the kernel allocates nothing.
 
-- `fused_upconcat_a`: 256 upsample channels + 128 skip channels; output 384.
-  This corresponds to YOLOv8n layers 10+11.
-- `fused_upconcat_b`: 128 upsample channels + 64 skip channels; output 192.
-  This corresponds to YOLOv8n layers 13+14.
+| Function | Up channels | Skip channels | Output channels | YOLOv8n layers |
+|---|---:|---:|---:|---|
+| `fused_upconcat_a` | 256 | 128 | 384 | 10+11 |
+| `fused_upconcat_b` | 128 | 64 | 192 | 13+14 |
 
-Both stages use QUAD order: each source pixel supplies a 2x2 output group.
-Stage B loads its 128 source channels once, copies them to all four output
-pixels, then copies each pixel's own skip channels. The output remains
-contiguous NHWC with channels ordered `[upsampled, skip]`.
+Each call processes one image. Both stages use QUAD traversal: a source pixel
+supplies a 2x2 group of output pixels. Every source value is loaded once and
+used for four output stores.
+
+- **Stage A:** copy the first 128 channels to all four pixels. Keep the second
+  128 channels in registers while interleaving their stores with each pixel's
+  skip copy. This is partial interleaving.
+- **Stage B:** keep all 128 source channels in registers and write
+  `A up, A skip, B up, B skip, C up, C skip, D up, D skip`.
+
+The source block occupies 16 YMM registers. The additional registers let skip
+copies run while source data remains live. Empty compiler barriers keep the
+generated store groups in order; they are not CPU fences.
 
 ```c
 #include "fused_upconcat.h"
@@ -35,35 +36,47 @@ contiguous NHWC with channels ordered `[upsampled, skip]`.
 fused_upconcat_a(up, skip, out, H, W);
 ```
 
-Buffers must be large enough; output must not overlap either input. The API
-processes one image per call. Unaligned addresses are supported. Integer vector
-moves preserve all FP32 bit patterns, including NaN payloads and signed zero.
-An AVX2-capable x86 CPU is required.
+Buffers must be large enough, and output must not overlap either input.
+Unaligned addresses are supported. Integer moves preserve all FP32 bit
+patterns, including NaN payloads and signed zero. The public API and output
+layout are unchanged from the earlier AVX2 implementation.
 
 ## Build and test
 
-Run commands from the repository root:
+Run from the repository root on a compatible x86 CPU:
 
 ```sh
-make kernels                    # Includes kernels/libfused_upconcat.so
-make test                       # Includes native AVX2 checks; no PyTorch needed
+make kernels
+make test
 make check-upconcat PYTHON=/path/to/python-with-torch
 make benchmark-upconcat PYTHON=/path/to/python-with-torch
 ```
 
-The AVX2 kernel uses its own `UPCONCAT_CFLAGS`, preserving the archive's
-`-march=native -mno-avx512f -mno-avx512vl` settings. Existing convolution flags
-remain independent. To build a portable AVX2 binary rather than one tuned to
-the compilation host, override the flags explicitly:
+The fused kernel has its own `UPCONCAT_CFLAGS`, independent of convolution:
 
-```sh
-make kernels/libfused_upconcat.so UPCONCAT_CFLAGS='-O3 -std=c11 -mavx2 -Wall -Wextra -Wpedantic'
+```text
+-O3 -std=c11 -march=native -mavx512f -mavx512vl -mprefer-vector-width=256
 ```
 
-The Python check/benchmark requires Linux, Python 3.9 or later, CPU PyTorch,
-an available CPU 0, and one thread. The Python interpreter defaults to `python3`;
-`PYTHON` selects an existing environment. An optional environment matching the
-supplied PyTorch 2.5.1 CPU measurements can be created with:
+The Makefile also enables compiler warnings. This build is tuned to the
+compilation host; build and run on ece020 or an equivalent target. The verified
+compiler is GCC 8.5.0.
+
+`make test` needs Python and GNU `objdump`, but does not need PyTorch.
+Its 48 native cases cover both stages, the tested image sizes, empty and
+rectangular shapes, unaligned addresses, raw floating-point bits, unchanged
+inputs and guard bytes. The assembly check verifies high YMM register use,
+absence of ZMM instructions and absence of vector stack spills. It can also
+be run separately:
+
+```sh
+make check-upconcat-isa
+```
+
+The PyTorch checks and benchmark require Linux, Python 3.9 or later, CPU
+PyTorch, an available CPU 0 and one thread. `PYTHON` defaults to `python3` and
+can select an existing environment. To create an environment matching the
+earlier PyTorch 2.5.1 CPU setup:
 
 ```sh
 python3.11 -m venv .venv
@@ -73,27 +86,23 @@ make check-upconcat PYTHON=.venv/bin/python
 make benchmark-upconcat PYTHON=.venv/bin/python
 ```
 
-PyTorch uses NCHW dimension labels with `channels_last`
-storage, so the C implementation receives NHWC bytes without a layout conversion.
-
-The native checks cover both kernels, rectangular and empty dimensions, raw
-floating-point bit patterns, unaligned addresses, unchanged inputs and guard
-bytes. The supplied Python checks additionally compare all output bits against
-PyTorch for 640, 1024 and 2048 image sizes and both YOLO stages.
+PyTorch uses NCHW dimension labels with `channels_last` storage, giving the C
+kernel NHWC bytes without a timed layout conversion. Its 12 checks compare all
+output bits for 640, 1024 and 2048 image sizes, both stages and two alignments.
 
 ## Benchmark outputs
 
-`make benchmark-upconcat` runs the supplied protocol in three separate
-processes, then writes `run-1.csv`, `run-2.csv`, `run-3.csv` and `result.md`
-under `benchmarks/results/nhwc_avx2/`. Generated outputs and compiled binaries
-are ignored by Git. `make clean` removes build outputs and keeps measurements.
+The benchmark labels the kernel `VL_MIXED` and writes `run-1.csv`, `run-2.csv`,
+`run-3.csv` and `result.md` under `benchmarks/results/nhwc_vl/`. Earlier AVX2
+results remain separate. Generated results and binaries are ignored by Git.
+`make clean` removes build outputs and keeps measurements.
 
-Timing uses 21 rounds per case, four warmups and five timed calls per round,
-with randomized case/path order. It compares preallocated PyTorch nearest
-upsampling plus concatenate against the fused AVX2 function. Both paths use
-preallocated output; PyTorch also uses a preallocated upsample intermediate.
-These timings cover the two operations, rather than the complete model.
+Each of three processes uses 21 rounds per case, four warmups and five timed
+calls per round, with randomized case and method order. It compares PyTorch
+nearest upsampling plus concatenate with the fused C kernel. Buffers are
+preallocated; PyTorch also uses a preallocated upsample intermediate. These
+times cover the two operations, not the whole YOLOv8n model.
 
-The original integration's verification and measurements are recorded in
-[the historical ece020 report](nhwc_avx2_ece020_20261022.md). That report used
-ROW order for stage B; its timings have not been updated for QUAD order.
+The [October 22 report](nhwc_avx2_ece020_20261022.md) and the
+[earlier 512-bit comparison](AVX2_AVX512_comparison.md) describe older kernels.
+Their measurement tables do not describe the current VL_MIXED implementation.

@@ -2,8 +2,8 @@ CC ?= gcc
 CFLAGS ?= -std=c11 -march=native -O3  -mavx2 -mfma 
 LDLIBS ?= -lm
 PYTHON ?= python3
-# Preserve the supplied AVX2 build independently of the AVX-512 convolution.
-UPCONCAT_CFLAGS ?= -O3 -std=c11 -march=native -mno-avx512f -mno-avx512vl -Wall -Wextra -Wpedantic
+# VL_MIXED uses 256-bit moves and AVX-512VL's extra YMM registers.
+UPCONCAT_CFLAGS ?= -O3 -std=c11 -march=native -mavx512f -mavx512vl -mprefer-vector-width=256 -Wall -Wextra -Wpedantic
 UPCONCAT_LIB = kernels/libfused_upconcat.so
 UPCONCAT_SRC = kernels/fused_upconcat.c
 UPCONCAT_HEADERS = include/fused_upconcat.h
@@ -14,7 +14,7 @@ KERNEL_LIB = kernels/libfastkernels.so
 KERNEL_SRC = kernels/batchnorm_maxpool_skeleton.c
 KERNEL_HEADERS = include/batchnorm.h include/maxpool.h
 
-.PHONY: all test kernels benchmark-strided check-upconcat benchmark-upconcat clean
+.PHONY: all test kernels benchmark-strided check-upconcat check-upconcat-isa benchmark-upconcat clean
 
 all: $(TEST_BIN) $(UPCONCAT_LIB)
 
@@ -41,7 +41,10 @@ $(UPCONCAT_LIB): $(UPCONCAT_SRC) $(UPCONCAT_HEADERS)
 test_fused_upconcat.x: tests/test_fused_upconcat.c $(UPCONCAT_SRC) $(UPCONCAT_HEADERS)
 	$(CC) $(UPCONCAT_CFLAGS) -Iinclude -o $@ tests/test_fused_upconcat.c $(UPCONCAT_SRC)
 
-check-upconcat: $(UPCONCAT_LIB)
+check-upconcat-isa: $(UPCONCAT_LIB)
+	$(PYTHON) tests/check_fused_upconcat_isa.py
+
+check-upconcat: $(UPCONCAT_LIB) check-upconcat-isa
 	$(PYTHON) benchmarks/compare_fused_upconcat.py --check
 
 benchmark-upconcat: $(UPCONCAT_LIB)
@@ -53,7 +56,7 @@ benchmark-upconcat: $(UPCONCAT_LIB)
 $(KERNEL_LIB): $(KERNEL_SRC) $(KERNEL_HEADERS)
 	$(CC) $(CFLAGS) -fPIC -shared -o $@ $(KERNEL_SRC)
 
-test: $(TEST_BIN)
+test: $(TEST_BIN) check-upconcat-isa
 	./test_correctness.x
 	./test_conv_strided.x
 	./test_fused_upconcat.x

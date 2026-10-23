@@ -1,10 +1,10 @@
-# ece020: keep the minimal AVX2 production kernels
+# Historical AVX2 and 512-bit comparison on ece020
 
 This report describes the original measured variants. Its AVX2 stage B used
-ROW order. The current production stage B uses QUAD order with the same API;
+ROW order. The current production kernel uses 256-bit VL_MIXED with the same API;
 the measurements below have not been updated for that change.
 
-**Recommendation: retain MINIMAL_AVX2 for both stages and all three image sizes.** Neither full-width AVX-512 candidate provides a repeatable, material improvement that justifies a shape-specific dispatch. The requested experiment is complete; the source baseline was preserved unchanged.
+**Recommendation at the time: retain MINIMAL_AVX2 for both stages and all three image sizes.** Neither full-width AVX-512 candidate provides a repeatable, material improvement that justifies a shape-specific dispatch. The requested experiment is complete; the source baseline was preserved unchanged.
 
 The primary controlled session and a separate confirmation session each contain three independent processes. Every process measured all six shapes with 21 randomized/interleaved rounds, four warmup calls and five timed calls per candidate. Together they contain 2,268 round samples and 11,340 timed complete fused calls. These are warmed-buffer operator measurements, not end-to-end YOLO inference.
 
@@ -69,4 +69,4 @@ GCC 8.5.0 could compile sanitizer instrumentation but its dynamic ASan/UBSan lib
 
 Every timed kernel materializes the complete dense NHWC output, including all distinct skip suffixes. Buffers were allocated/first-touched after pinning to CPU 0, and candidates used the same addresses within each process. No allocation, initialization, checksum, correctness check or I/O occurred inside the timed call loop. Ordinary cached stores were used. Logical byte counts are not measured DRAM bandwidth, and no hardware-peak percentage is claimed.
 
-Build commands, GCC version, CPU/socket/cache details, affinity, timestamp and binary hashes are retained in `results/`. Normal and confirmation benchmark hashes agree. The minimal production choice remains the original two-function AVX2 interface; the ZMM candidates remain reproducible experimental alternatives.
+Build commands, GCC version, CPU/socket/cache details, affinity, timestamp and binary hashes are retained in `results/`. Normal and confirmation benchmark hashes agree. The production choice in that experiment was the original two-function AVX2 interface; the ZMM candidates remain reproducible experimental alternatives.

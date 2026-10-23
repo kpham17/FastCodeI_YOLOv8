@@ -34,10 +34,14 @@ Consume C2f channel chunks without a separate chunk-copy pass using
 [STRIDED_CONVOLUTION.md](docs/STRIDED_CONVOLUTION.md) for the API,
 correctness tests, and a copy-plus-convolution benchmark.
 
-## Fused NHWC AVX2 upsample and concatenate
+## Fused NHWC upsample and concatenate
 
-Combine 2x nearest-neighbor upsampling and skip concatenation in one AVX2 pass
-with `fused_upconcat_a` and `fused_upconcat_b`. Both stages use QUAD order:
-each source pixel supplies a 2x2 group of output pixels. See the
-[API and testing guide](docs/nhwc_avx2_upconcat.md) and
-[historical ece020 benchmark results](docs/nhwc_avx2_ece020_20261022.md).
+Combine 2x nearest-neighbor upsampling and skip concatenation with
+`fused_upconcat_a` and `fused_upconcat_b`. The current VL_MIXED implementation
+uses 256-bit moves and AVX-512VL's extra vector registers. It requires
+AVX-512F and AVX-512VL, as supported by ece020.
+
+Both stages use QUAD traversal. Stage B interleaves each pixel's upsampled
+and skip stores; stage A interleaves its second 128-channel block and skips.
+See the [API and testing guide](docs/nhwc_avx2_upconcat.md).
+The [earlier AVX2 measurements](docs/nhwc_avx2_ece020_20261022.md) are historical.
