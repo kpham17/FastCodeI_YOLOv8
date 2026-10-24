@@ -56,74 +56,98 @@ through the call. Zero dimensions/count/channels are invalid. Use
 `uc_status_string(status)` for an error description. The public header
 contains the full contract.
 
-The implementation selector was removed: existing calls should drop their
-final `UC_AUTO` argument. The function always chooses the measured production
-policy, with no AVX-512 or streaming-store implementation to configure.
+## Copy schedules and coverage
 
-## YOLOv8n coverage and performance
+The entry point covers the supplied inventory's 11 standalone joins: eight
+C2f joins, the four-input SPPF join, and neck layers 17/20. Dimensions remain
+runtime values; there are no separate implementations for different images.
+Tests cover all 33 site/resolution combinations at 640/1024/2048, plus arbitrary
+shapes, batches, strides, input counts, offset views, bit patterns, guards,
+exact allocation tails, inaccessible guard pages and reject-before-write cases.
 
-One entry point covers all 11 standalone feature-map joins in the supplied
-YOLOv8n inventory: eight C2f joins, SPPF's four-input join, and neck sites 17/20.
-The tests cover all 33 site/resolution combinations at 640/1024/2048, plus odd
-shapes, batches, arbitrary strides/counts, offset views, bit patterns, buffer
-guards, exact allocation tails and reject-before-write cases. Unix builds
-also test vector tails against inaccessible guard pages.
+One AVX2 copy primitive serves both the generic loop and a shared constant-width
+schedule. Exact dense C2f tuples `[2*C,C]` / `[2*C,C,C]` with C=16,32,64, and the
+neck tuple `[64,128]`, use that schedule. C=16 takes the fixed schedule below 32768 total pixels;
+paired tests favored the generic loop for its larger measured tensors. This
+cutoff separates the measured workloads and is target tuning, not a claim about
+every possible intermediate size. The first C2f input already contains
+both adjacent cv1 splits. Everything else uses the generic per-input-stride
+loop, including SPPF and the `[128,256]` neck tuple. A single dense input uses
+one memcpy. Runtime CPU detection guards AVX2; other CPUs use portable memcpy.
 
-C2f's dense `[cv1 pair, bottleneck1, ...]` representation retains the measured
-fixed-layout scheduling. Large dense `[128,64]` and `[128,64,64]` joins with
-N>=16384 select sequential AVX2 on AVX-512-capable CPUs, preserving the
-previous target policy. That feature-bit check qualifies the policy; the
-kernel contains no AVX-512 instructions. Other valid layouts use the generic
-AVX2 copy loop. This is measured target tuning, not proof of optimality on
-every CPU or every possible shape.
+## Measured simplification on ece020
 
-The two fused upsample+concat sites keep their existing separate kernels.
-This function does not perform upsampling, convolution, layout conversion,
-other data types or concatenation along non-channel axes. It has not been
-integrated into a complete inference run.
+The reference is the committed implementation at `9191c93004626f07673f5788724dc922fbad3672`.
+The reviewed source decreases from **416 to 199 lines** including comments;
+GCC object text decreases from **23891 to 4108 bytes (82.8%)**. Validation and the
+public header remain unchanged. Expanded per-width routines, four-pixel
+unrolling, specialized fallback copies, and the AVX-512 feature-bit policy are
+replaced by shared routines. The retained SIMD implementation uses cached AVX2.
 
-Cleanup was checked against the previous production default at commit
-`a9042b0` on ece020 (Intel Xeon Silver 4208, GCC 8.5, CPU2). Both kernels ran
-on the same buffers in randomized order: 21 rounds, seven calls per warm
-batch or one call per 64MiB eviction-proxy batch, three independent processes.
-Each number sums eleven site medians within a process, then takes the median
-of the three process sums. Times are milliseconds:
+23 alternative copy implementations were screened. Final comparisons of the
+144-, 165- and 188-line experimental candidates used three independent paired
+processes on ece020 (Xeon Silver 4208, GCC 8.5, CPU2; sibling CPU18 idle at setup).
+The final 199-line source adds explanatory comments and a C=16 pixel-count cutoff.
+It was separately compared to the committed baseline across the full matrix.
+The integrated object has identical `.text` bytes to that final measured source.
 
-| Input | Mode | Previous default | Cleaned implementation |
-|---:|---|---:|---:|
-|640|warm|1.722058|1.716136|
-|640|cold|2.052611|2.045481|
-|1024|warm|5.500214|5.496288|
-|1024|cold|6.045792|6.049171|
-|2048|warm|29.356939|29.357463|
-|2048|cold|30.235198|30.276017|
+Each process ran both implementations on the same buffers in randomized order,
+21 rounds per case: seven calls per warm batch, or one call after a 64 MiB
+cache-eviction proxy. Each time below sums the 11 site medians within a process,
+then takes the median of the three process sums. Times are milliseconds:
 
-Aggregate differences are within 0.4%, supporting no material performance
-regression on this matrix. All 396 comparison rows pass bitwise verification.
-Native, portable and Clang ASan/UBSan each pass 313 cases; C++ linkage and
-integration examples pass. GCC's object text size falls from 47440 to 23891
-bytes (49.6%); assembly contains no ZMM or non-temporal stores. Shared-host
-variability remains; these are standalone single-core measurements, not
-full-inference times or a hardware-peak claim.
+| Input | Mode | Current commit | Review candidate | Change |
+|---:|---|---:|---:|---:|
+|640|warm|1.705904|1.685077|-1.22%|
+|640|cold|2.083249|2.071782|-0.55%|
+|1024|warm|5.418057|5.356123|-1.14%|
+|1024|cold|5.889115|5.821818|-1.14%|
+|2048|warm|29.123771|28.782721|-1.17%|
+|2048|cold|29.969255|29.603859|-1.22%|
 
-The baseline identifier `a9042b0` refers to the standalone development snapshot;
-detailed validation data are archived separately. Development reports,
-reference copies and alternate implementations are excluded from this tree.
+All 396 paired result rows pass bitwise verification. Across per-case medians
+from the three processes, the largest increase is 0.86%; the identical-code
+control exhibited per-case increases up to 1.49%. This supports no material
+regression on this matrix, rather than a claim of a universally optimal kernel.
+
+The remaining families were then removed individually, comparing each deletion
+to the compact candidate on affected cases: 17 rounds, five warm calls or one
+cold call, three independent processes. The largest median slowdowns were:
+
+| Removed family | Affected example | Slowdown |
+|---|---|---:|
+|C2f C=16|640, site 2, warm|3.03%|
+|C2f C=32|1024, site 15, warm|1.84%|
+|C2f C=64|640, site 12, warm|3.58%|
+|Neck [64,128]|640, site 17, warm|2.87%|
+
+These measurements justify keeping those four families. Still shorter generic
+and two-input candidates showed repeatable slowdowns in individual production
+cases. Experimental variants and detailed results are archived separately from
+this production tree.
+
+The final GCC native, forced-portable, Clang optimized and Clang ASan/UBSan
+suites each pass 313 cases / 172412 assertions. C++ linkage, `make -B all kernels`
+and the full repository `make test` target pass. Assembly uses YMM registers
+without ZMM instructions or streaming stores.
+
+The two fused upsample+concat sites retain their separate kernels. This function
+copies FP32 NHWC channels; it does not perform upsampling or convolution.
+The timings are standalone single-core measurements, not complete inference
+latency or a percentage of the machine's hardware peak.
 
 ## Reproduce a standalone measurement
 
 ```sh
 make bench-concat
-# Choose a quiet logical CPU and check its SMT sibling before measuring.
-taskset -c 2 ./bench_universal_concat.x --rounds 21 --calls 7 > benchmarks/concat_warm.csv
-taskset -c 2 ./bench_universal_concat.x --cold --rounds 21 --calls 1 > benchmarks/concat_cold.csv
+# Choose a quiet logical CPU and inspect its SMT sibling before measuring.
+taskset -c 2 ./bench_universal_concat.x --rounds 21 --calls 7 > concat_warm.csv
+taskset -c 2 ./bench_universal_concat.x --cold --rounds 21 --calls 1 > concat_cold.csv
 ```
 
-The benchmark checks every timed batch against an independent byte oracle.
-Allocation, input generation, verification and 64MiB eviction are outside the
-timer. Warm batches have an untimed restore call; cold mode is an eviction
-proxy, not a guarantee that every cache line is cold. CSV includes per-site
-median/p10/p90 and useful bandwidth; metadata on stderr records host/affinity.
-Useful traffic is twice output bytes, not measured DRAM traffic or a machine
-peak. `--image N` accepts inventory images divisible by 32; the API itself
-accepts arbitrary positive dimensions. `--site N` selects one inventory site.
+Allocation, generation, verification and eviction are outside timing. Warm
+batches have an untimed restore call; cold mode is an eviction proxy. CSV
+records median/p10/p90 and useful bandwidth; stderr records host and affinity.
+Useful traffic is twice output bytes, not measured DRAM traffic. `--image N`
+accepts inventory images divisible by 32; the API accepts arbitrary positive
+dimensions. `--site N` selects one inventory site.

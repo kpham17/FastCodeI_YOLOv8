@@ -1,4 +1,5 @@
-/* Dense NHWC channel concatenation. All validation precedes the first store.
+/* FP32 channel concatenation: strided NHWC inputs, dense NHWC output.
+ * All validation precedes the first store.
  * The only SIMD implementation is cached AVX2; other CPUs use memcpy.
  */
 #include "universal_concat_nhwc.h"
@@ -78,66 +79,12 @@ static int validate(const uc_input_view *v, size_t k, float *out, size_t cap, si
     }
     return UC_OK;
 }
-/* Constant byte counts give the compiler/libc an optimized memcpy baseline. */
-static inline void copy_span(float *d, const float *s, size_t c) {
-    switch (c) {
-    case 16:
-        memcpy(d, s, 64);
-        break;
-    case 32:
-        memcpy(d, s, 128);
-        break;
-    case 64:
-        memcpy(d, s, 256);
-        break;
-    case 128:
-        memcpy(d, s, 512);
-        break;
-    case 256:
-        memcpy(d, s, 1024);
-        break;
-    default:
-        memcpy(d, s, c * sizeof(float));
-    }
-}
-static int all_dense(const uc_input_view *v, size_t k) {
-    for (size_t i = 0; i < k; ++i)
-        if (v[i].pixel_stride != v[i].channels)
-            return 0;
-    return 1;
-}
-#define MEMCPY2(A, B)                                                                              \
-    static void memcpy_##A##_##B(const uc_input_view *v, float *d, size_t n) {                     \
-        const float *a = v[0].data, *b = v[1].data;                                                \
-        for (size_t p = 0; p < n; ++p) {                                                           \
-            memcpy(d + p * ((A) + (B)), a + p * (A), (A) * 4);                                     \
-            memcpy(d + p * ((A) + (B)) + (A), b + p * (B), (B) * 4);                               \
-        }                                                                                          \
-    }
-MEMCPY2(32, 16)
-MEMCPY2(64, 32) MEMCPY2(128, 64) MEMCPY2(256, 128) MEMCPY2(64, 128) MEMCPY2(128, 256)
-#undef MEMCPY2
-    static int fixed_memcpy(const uc_input_view *v, size_t k, float *d, size_t n) {
-    if (k < 2 || k > 4 || !all_dense(v, k))
-        return 0;
-    if (k == 2) {
-#define MATCH(A, B)                                                                                \
-    if (v[0].channels == (A) && v[1].channels == (B)) {                                            \
-        memcpy_##A##_##B(v, d, n);                                                                 \
-        return 1;                                                                                  \
-    }
-        MATCH(32, 16) MATCH(64, 32) MATCH(128, 64) MATCH(256, 128) MATCH(64, 128) MATCH(128, 256)
-#undef MATCH
-    }
-    return 0;
-}
+/* Portable fallback uses the same per-input strides as the vector loop. */
 static void concat_memcpy(const uc_input_view *v, size_t k, float *d, size_t n, size_t co) {
-    if (fixed_memcpy(v, k, d, n))
-        return;
     for (size_t p = 0; p < n; ++p) {
         float *pixel = d + p * co;
         for (size_t i = 0; i < k; ++i) {
-            copy_span(pixel, v[i].data + p * v[i].pixel_stride, v[i].channels);
+            memcpy(pixel, v[i].data + p * v[i].pixel_stride, v[i].channels * sizeof(float));
             pixel += v[i].channels;
         }
     }
@@ -158,16 +105,6 @@ static int has_avx2(void) {
  * all FP32 bit patterns, including signaling NaNs, without FP operations. */
 static INLINE_AVX2 void copy_avx2(float *d, const float *s, size_t c) {
     size_t j = 0;
-    for (; c - j >= 32; j += 32) {
-        __m256i x0 = _mm256_loadu_si256((const __m256i_u *)(s + j));
-        __m256i x1 = _mm256_loadu_si256((const __m256i_u *)(s + j + 8));
-        __m256i x2 = _mm256_loadu_si256((const __m256i_u *)(s + j + 16));
-        __m256i x3 = _mm256_loadu_si256((const __m256i_u *)(s + j + 24));
-        _mm256_storeu_si256((__m256i_u *)(d + j), x0);
-        _mm256_storeu_si256((__m256i_u *)(d + j + 8), x1);
-        _mm256_storeu_si256((__m256i_u *)(d + j + 16), x2);
-        _mm256_storeu_si256((__m256i_u *)(d + j + 24), x3);
-    }
     for (; c - j >= 8; j += 8) {
         __m256i x = _mm256_loadu_si256((const __m256i_u *)(s + j));
         _mm256_storeu_si256((__m256i_u *)(d + j), x);
@@ -175,195 +112,57 @@ static INLINE_AVX2 void copy_avx2(float *d, const float *s, size_t c) {
     if (j < c)
         memcpy(d + j, s + j, (c - j) * sizeof(float));
 }
-/* Register-tiled 16/32 channel output: cv1 supplies the first 2c
- * channels contiguously; Bottleneck output(s) supply the remaining c each.
- * Load all cv1 registers before storing, minimizing memory interleaving. */
-static AVX2 void concat_c16(const float *s, const float *a, const float *b, size_t m, float *d,
-                            size_t n) {
-    const size_t stride = (m + 2) * 16;
-    for (size_t p = 0; p < n; p++, s += 32, a += 16, d += stride) {
-        __m256 x0 = _mm256_loadu_ps(s + 0), x1 = _mm256_loadu_ps(s + 8);
-        __m256 x2 = _mm256_loadu_ps(s + 16), x3 = _mm256_loadu_ps(s + 24);
-        _mm256_storeu_ps(d + 0, x0);
-        _mm256_storeu_ps(d + 8, x1);
-        _mm256_storeu_ps(d + 16, x2);
-        _mm256_storeu_ps(d + 24, x3);
-        __m256 y0 = _mm256_loadu_ps(a + 0), y1 = _mm256_loadu_ps(a + 8);
-        _mm256_storeu_ps(d + 32, y0);
-        _mm256_storeu_ps(d + 40, y1);
-        if (m == 2) {
-            const float *bb = b + p * 16;
-            __m256 z0 = _mm256_loadu_ps(bb + 0), z1 = _mm256_loadu_ps(bb + 8);
-            _mm256_storeu_ps(d + 48, z0);
-            _mm256_storeu_ps(d + 56, z1);
-        }
-    }
-}
-static AVX2 void concat_c32(const float *s, const float *a, const float *b, size_t m, float *d,
-                            size_t n) {
-    const size_t stride = (m + 2) * 32;
-    for (size_t p = 0; p < n; p++, s += 64, a += 32, d += stride) {
-        __m256 x0 = _mm256_loadu_ps(s + 0), x1 = _mm256_loadu_ps(s + 8);
-        __m256 x2 = _mm256_loadu_ps(s + 16), x3 = _mm256_loadu_ps(s + 24);
-        __m256 x4 = _mm256_loadu_ps(s + 32), x5 = _mm256_loadu_ps(s + 40);
-        __m256 x6 = _mm256_loadu_ps(s + 48), x7 = _mm256_loadu_ps(s + 56);
-        _mm256_storeu_ps(d + 0, x0);
-        _mm256_storeu_ps(d + 8, x1);
-        _mm256_storeu_ps(d + 16, x2);
-        _mm256_storeu_ps(d + 24, x3);
-        _mm256_storeu_ps(d + 32, x4);
-        _mm256_storeu_ps(d + 40, x5);
-        _mm256_storeu_ps(d + 48, x6);
-        _mm256_storeu_ps(d + 56, x7);
-        __m256 y0 = _mm256_loadu_ps(a + 0), y1 = _mm256_loadu_ps(a + 8);
-        __m256 y2 = _mm256_loadu_ps(a + 16), y3 = _mm256_loadu_ps(a + 24);
-        _mm256_storeu_ps(d + 64, y0);
-        _mm256_storeu_ps(d + 72, y1);
-        _mm256_storeu_ps(d + 80, y2);
-        _mm256_storeu_ps(d + 88, y3);
-        if (m == 2) {
-            const float *bb = b + p * 32;
-            __m256 z0 = _mm256_loadu_ps(bb + 0), z1 = _mm256_loadu_ps(bb + 8);
-            __m256 z2 = _mm256_loadu_ps(bb + 16), z3 = _mm256_loadu_ps(bb + 24);
-            _mm256_storeu_ps(d + 96, z0);
-            _mm256_storeu_ps(d + 104, z1);
-            _mm256_storeu_ps(d + 112, z2);
-            _mm256_storeu_ps(d + 120, z3);
-        }
-    }
-}
-
-/* Large C2f joins: 4-pixel unroll, each c-float copy uses AVX2.
- * Keep this structure to preserve the measured larger-channel behavior. */
-#define COPY3(C)                                                                                   \
-    do {                                                                                           \
-        copy_avx2(d, s, 2 * (C));                                                                  \
-        copy_avx2(d + 2 * (C), a, (C));                                                            \
-        s += 2 * (C);                                                                              \
-        a += (C);                                                                                  \
-        d += 3 * (C);                                                                              \
-    } while (0)
-#define COPY4(C)                                                                                   \
-    do {                                                                                           \
-        copy_avx2(d, s, 2 * (C));                                                                  \
-        copy_avx2(d + 2 * (C), a, (C));                                                            \
-        copy_avx2(d + 3 * (C), b, (C));                                                            \
-        s += 2 * (C);                                                                              \
-        a += (C);                                                                                  \
-        b += (C);                                                                                  \
-        d += 4 * (C);                                                                              \
-    } while (0)
-#define LARGE_CONCAT(C)                                                                            \
-    static AVX2 void concat_##C(const float *s, const float *const *bn, size_t m, float *d,        \
-                                size_t n) {                                                        \
-        size_t p = 0;                                                                              \
-        const float *a = bn[0];                                                                    \
-        if (m == 1) {                                                                              \
-            for (; p + 4 <= n; p += 4) {                                                           \
-                COPY3(C);                                                                          \
-                COPY3(C);                                                                          \
-                COPY3(C);                                                                          \
-                COPY3(C);                                                                          \
-            }                                                                                      \
-            for (; p < n; ++p) {                                                                   \
-                COPY3(C);                                                                          \
-            }                                                                                      \
-        } else {                                                                                   \
-            const float *b = bn[1];                                                                \
-            for (; p + 4 <= n; p += 4) {                                                           \
-                COPY4(C);                                                                          \
-                COPY4(C);                                                                          \
-                COPY4(C);                                                                          \
-                COPY4(C);                                                                          \
-            }                                                                                      \
-            for (; p < n; ++p) {                                                                   \
-                COPY4(C);                                                                          \
-            }                                                                                      \
-        }                                                                                          \
-    }
-LARGE_CONCAT(64)
-LARGE_CONCAT(128)
-#undef LARGE_CONCAT
-#undef COPY3
-#undef COPY4
-
-#define DEFINE_NECK(CA, CB)                                                                        \
-    AVX2 static void concat_##CA##_##CB##_avx2(const float *restrict a, const float *restrict b,   \
-                                               float *restrict out, size_t npixels) {              \
-        for (size_t p = 0; p < npixels; ++p) {                                                     \
-            for (size_t c = 0; c < (CA); c += 8) {                                                 \
-                __m256i v = _mm256_loadu_si256((const __m256i_u *)(a + c));                        \
-                _mm256_storeu_si256((__m256i_u *)(out + c), v);                                    \
-            }                                                                                      \
-            for (size_t c = 0; c < (CB); c += 8) {                                                 \
-                __m256i v = _mm256_loadu_si256((const __m256i_u *)(b + c));                        \
-                _mm256_storeu_si256((__m256i_u *)(out + (CA) + c), v);                             \
-            }                                                                                      \
-            a += (CA);                                                                             \
-            b += (CB);                                                                             \
-            out += (CA) + (CB);                                                                    \
-        }                                                                                          \
-    }
-    DEFINE_NECK(64, 128) DEFINE_NECK(128, 256)
-#undef DEFINE_NECK
-
-    /* Only these two sequential layouts are selected by the production policy.
-     * Constant segment widths let the compiler inline every vector move. */
-    static AVX2 void concat_c64_pair(const uc_input_view *v, float *d, size_t n) {
+/* Shared fixed-width schedule for the measured dense C2f/neck cases.
+ * Constant widths and input counts let GCC inline and unroll the vector moves. */
+static INLINE_AVX2 void concat_dense(const uc_input_view *v, size_t k, float *d, size_t n,
+                                     size_t ca, size_t cb) {
     const float *a = v[0].data, *b = v[1].data;
+    const float *c = k == 3 ? v[2].data : NULL;
     for (size_t p = 0; p < n; ++p) {
-        copy_avx2(d, a, 128);
-        copy_avx2(d + 128, b, 64);
-        a += 128;
-        b += 64;
-        d += 192;
+        copy_avx2(d, a, ca);
+        copy_avx2(d + ca, b, cb);
+        if (k == 3) {
+            copy_avx2(d + ca + cb, c, cb);
+            c += cb;
+        }
+        a += ca;
+        b += cb;
+        d += ca + (k - 1) * cb;
     }
 }
-static AVX2 void concat_c64_triple(const uc_input_view *v, float *d, size_t n) {
-    const float *a = v[0].data, *b = v[1].data, *c = v[2].data;
-    for (size_t p = 0; p < n; ++p) {
-        copy_avx2(d, a, 128);
-        copy_avx2(d + 128, b, 64);
-        copy_avx2(d + 192, c, 64);
-        a += 128;
-        b += 64;
-        c += 64;
-        d += 256;
-    }
-}
+/* Return 1 after copying an exact supported tuple, otherwise use the generic loop. */
 static AVX2 int fixed_vector(const uc_input_view *v, size_t k, float *d, size_t n) {
-    if (k < 2 || k > 3 || !all_dense(v, k))
+    if (k < 2 || k > 3)
         return 0;
+    for (size_t i = 0; i < k; ++i)
+        if (v[i].channels != v[i].pixel_stride)
+            return 0;
     size_t c = v[1].channels;
     if (k == 2 && v[0].channels == 64 && c == 128) {
-        concat_64_128_avx2(v[0].data, v[1].data, d, n);
-        return 1;
-    }
-    if (k == 2 && v[0].channels == 128 && c == 256) {
-        concat_128_256_avx2(v[0].data, v[1].data, d, n);
+        concat_dense(v, 2, d, n, 64, 128);
         return 1;
     }
     if (c > SIZE_MAX / 2 || v[0].channels != 2 * c || (k == 3 && v[2].channels != c))
         return 0;
-    const float *bn[] = {v[1].data, k == 3 ? v[2].data : NULL};
+    /* C=16 fixed copying won for the measured small tensors on ece020.
+     * Larger tensors use the general loop; this cutoff is target tuning. */
+    if (c == 16 && n >= 32768)
+        return 0;
+/* The first C2f input contains both adjacent cv1 splits: 2*C channels. */
+#define C2F_WIDTH(C) case C: \
+    if (k == 2) concat_dense(v, 2, d, n, 2 * (C), C); \
+    else concat_dense(v, 3, d, n, 2 * (C), C); \
+    return 1
     switch (c) {
-    case 16:
-        concat_c16(v[0].data, bn[0], bn[1], k - 1, d, n);
-        break;
-    case 32:
-        concat_c32(v[0].data, bn[0], bn[1], k - 1, d, n);
-        break;
-    case 64:
-        concat_64(v[0].data, bn, k - 1, d, n);
-        break;
-    case 128:
-        concat_128(v[0].data, bn, k - 1, d, n);
-        break;
+        C2F_WIDTH(16);
+        C2F_WIDTH(32);
+        C2F_WIDTH(64);
     default:
         return 0;
     }
-    return 1;
+#undef C2F_WIDTH
 }
+/* General path: arbitrary input count, channel widths and pixel strides. */
 static AVX2 void concat_vector(const uc_input_view *v, size_t k, float *d, size_t n, size_t co) {
     for (size_t p = 0; p < n; ++p) {
         float *pixel = d + p * co;
@@ -377,13 +176,12 @@ static AVX2 void concat_vector(const uc_input_view *v, size_t k, float *d, size_
 #define UC_VECTOR 0
 #endif
 
-int universal_concat_nhwc_f32(const uc_input_view *v, size_t k, float *out, size_t cap, size_t b,
-                              size_t h, size_t w) {
+int universal_concat_nhwc_f32(const uc_input_view *v, size_t k, float *out, size_t cap,
+                              size_t b, size_t h, size_t w) {
     size_t n, co;
     int status = validate(v, k, out, cap, b, h, w, &n, &co);
     if (status != UC_OK)
         return status;
-
     /* A single dense input is already one contiguous span. */
     if (k == 1 && v[0].pixel_stride == co) {
         memcpy(out, v[0].data, n * co * sizeof(float));
@@ -391,21 +189,6 @@ int universal_concat_nhwc_f32(const uc_input_view *v, size_t k, float *out, size
     }
 #if UC_VECTOR
     if (has_avx2()) {
-        /* Measured on Xeon Silver4208: these large C2f layouts favor a
-         * sequential output cursor. The feature bit only qualifies this CPU
-         * policy; no AVX-512 instructions are compiled or executed here.
-         * Total pixel count keeps the policy independent of B/H/W shape. */
-        if (n >= 16384 && (k == 2 || k == 3) && v[0].channels == 128 && v[1].channels == 64 &&
-            (k == 2 || v[2].channels == 64) && all_dense(v, k) &&
-            __builtin_cpu_supports("avx512f")) {
-            if (k == 2)
-                concat_c64_pair(v, out, n);
-            else
-                concat_c64_triple(v, out, n);
-            return UC_OK;
-        }
-        /* Dense common tuples retain their measured C2f/neck scheduling.
-         * Everything else uses the same safe per-input-stride copy loop. */
         if (!fixed_vector(v, k, out, n))
             concat_vector(v, k, out, n, co);
         return UC_OK;
