@@ -63,7 +63,7 @@ test: $(TEST_BIN) check-upconcat-isa
 	./benchmark.x
 
 clean:
-	rm -f $(TEST_BIN) benchmark_conv_strided.x $(KERNEL_LIB) $(UPCONCAT_LIB) $(CONCAT_OBJ) $(CONCAT_LIB) $(CONCAT_TEST_BIN) $(RESIDUAL_OBJ) $(RESIDUAL_LIB) $(RESIDUAL_TEST_BIN)
+	rm -f $(TEST_BIN) benchmark_conv_strided.x $(KERNEL_LIB) $(UPCONCAT_LIB) $(CONCAT_OBJ) $(CONCAT_LIB) $(CONCAT_TEST_BIN) $(RESIDUAL_OBJ) $(RESIDUAL_LIB) $(RESIDUAL_TEST_BIN) $(CHUNK_OBJ) $(CHUNK_LIB) $(CHUNK_TEST_BIN)
 
 # Standalone concat keeps fallback code free of global -march/AVX flags.
 CONCAT_CFLAGS ?= -O3 -std=c11 -Wall -Wextra -Wpedantic -mtune=skylake-avx512
@@ -155,3 +155,53 @@ check-residual-sanitize:
 all: $(RESIDUAL_LIB)
 kernels: $(RESIDUAL_LIB)
 test: check-residual
+
+
+# Materialized NHWC channel halves; ece020 AVX2 / AVX-512F target.
+CHUNK_CFLAGS ?= -O3 -std=c11 -Wall -Wextra -Wpedantic -mtune=skylake-avx512
+CHUNK_CPU ?= 2
+CHUNK_SRC = kernels/chunk_nhwc.c
+CHUNK_HEADER = include/chunk_nhwc.h
+CHUNK_OBJ = kernels/chunk_nhwc.o
+CHUNK_LIB = kernels/libchunk_nhwc.a
+CHUNK_TEST_BIN = test_chunk_nhwc.x test_chunk_nhwc_cpp.x test_chunk_nhwc_sanitize.x bench_chunk_nhwc.x bench_chunk_consumers.x
+
+.PHONY: chunk check-chunk check-chunk-sanitize bench-chunk bench-chunk-consumers
+chunk: $(CHUNK_LIB)
+
+$(CHUNK_OBJ): $(CHUNK_SRC) $(CHUNK_HEADER)
+	$(CC) $(CHUNK_CFLAGS) -Iinclude -c $< -o $@
+
+$(CHUNK_LIB): $(CHUNK_OBJ)
+	$(AR) rcs $@ $<
+
+test_chunk_nhwc.x: tests/test_chunk_nhwc.c $(CHUNK_HEADER) $(CHUNK_LIB)
+	$(CC) $(CHUNK_CFLAGS) -Iinclude $< $(CHUNK_LIB) -o $@
+
+test_chunk_nhwc_cpp.x: tests/test_chunk_nhwc_cpp.cpp $(CHUNK_HEADER) $(CHUNK_LIB)
+	$(CXX) -std=c++11 -Wall -Wextra -Wpedantic -Iinclude $< $(CHUNK_LIB) -o $@
+
+check-chunk: test_chunk_nhwc.x test_chunk_nhwc_cpp.x
+	taskset -c $(CHUNK_CPU) ./test_chunk_nhwc.x
+	taskset -c $(CHUNK_CPU) ./test_chunk_nhwc_cpp.x
+
+bench_chunk_nhwc.x: benchmarks/bench_chunk_nhwc.c $(CHUNK_HEADER) $(CHUNK_LIB)
+	$(CC) $(CHUNK_CFLAGS) -Iinclude $< $(CHUNK_LIB) -o $@
+
+bench-chunk: bench_chunk_nhwc.x
+	taskset -c $(CHUNK_CPU) ./bench_chunk_nhwc.x 1
+
+bench_chunk_consumers.x: benchmarks/bench_chunk_consumers.c $(CHUNK_HEADER) $(CHUNK_LIB) $(RESIDUAL_LIB) include/conv2D.h include/mmm_4x48.h include/mmm_4x24.h include/silu.h
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -Iinclude $< $(CHUNK_LIB) $(RESIDUAL_LIB) -o $@ $(LDLIBS)
+
+bench-chunk-consumers: bench_chunk_consumers.x
+	taskset -c $(CHUNK_CPU) ./bench_chunk_consumers.x 1
+
+check-chunk-sanitize:
+	$(CC) -std=c11 -O1 -g -mtune=skylake-avx512 -fno-omit-frame-pointer \
+		-fsanitize=address,undefined -Iinclude $(CHUNK_SRC) tests/test_chunk_nhwc.c -o test_chunk_nhwc_sanitize.x
+	ASAN_OPTIONS=detect_leaks=1 taskset -c $(CHUNK_CPU) ./test_chunk_nhwc_sanitize.x
+
+all: $(CHUNK_LIB)
+kernels: $(CHUNK_LIB)
+test: check-chunk

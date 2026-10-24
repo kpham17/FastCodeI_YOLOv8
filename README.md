@@ -62,3 +62,5 @@ Add FP32 NHWC convolution output and a dense or strided shortcut with
 the shortcut is preserved for C2f concatenation. Production is one C file and
 one header. Build with `make residual`; test with `make check-residual`.
 See the [API and consistency guide](docs/residual_add.md).
+
+Materialized channel splitting is available through `chunk2_nhwc_f32` in `include/chunk_nhwc.h`; either output may be omitted. See [usage and measurement notes](docs/chunk_nhwc.md). Build and verify with `make chunk check-chunk`; benchmark with `make bench-chunk` (one thread, CPU 2). Existing zero-copy model paths remain the default.
