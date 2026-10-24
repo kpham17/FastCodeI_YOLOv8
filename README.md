@@ -45,3 +45,12 @@ Both stages use QUAD traversal. Stage B interleaves each pixel's upsampled
 and skip stores; stage A interleaves its second 128-channel block and skips.
 See the [API and testing guide](docs/nhwc_avx2_upconcat.md).
 The [earlier AVX2 measurements](docs/nhwc_avx2_ece020_20261022.md) are historical.
+
+## Universal NHWC channel concatenation
+
+Join any positive number of FP32 NHWC inputs with
+`universal_concat_nhwc_f32` in `include/universal_concat_nhwc.h`.
+The checked implementation uses cached AVX2 with a portable fallback and
+covers all eleven standalone YOLOv8n joins at 640/1024/2048 input sizes.
+Build with `make concat`; run `make check-concat` and
+`make check-concat-portable`. See the [API, benchmark and integration guide](docs/universal_concat.md).

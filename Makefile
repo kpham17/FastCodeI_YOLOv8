@@ -63,4 +63,50 @@ test: $(TEST_BIN) check-upconcat-isa
 	./benchmark.x
 
 clean:
-	rm -f $(TEST_BIN) benchmark_conv_strided.x $(KERNEL_LIB) $(UPCONCAT_LIB)
+	rm -f $(TEST_BIN) benchmark_conv_strided.x $(KERNEL_LIB) $(UPCONCAT_LIB) $(CONCAT_OBJ) $(CONCAT_LIB) $(CONCAT_TEST_BIN)
+
+# Standalone concat keeps fallback code free of global -march/AVX flags.
+CONCAT_CFLAGS ?= -O3 -std=c11 -Wall -Wextra -Wpedantic -mtune=skylake-avx512
+CONCAT_CPPFLAGS = -Iinclude -Itests
+CONCAT_SRC = kernels/universal_concat_nhwc.c
+CONCAT_HEADER = include/universal_concat_nhwc.h
+CONCAT_WORKLOADS = tests/universal_concat_workloads.h
+CONCAT_OBJ = kernels/universal_concat_nhwc.o
+CONCAT_LIB = kernels/libuniversal_concat.a
+CONCAT_TEST_BIN = test_universal_concat.x test_universal_concat_cpp.x test_universal_concat_portable.x test_universal_concat_sanitize.x bench_universal_concat.x
+
+.PHONY: concat check-concat check-concat-portable check-concat-sanitize bench-concat
+concat: $(CONCAT_LIB)
+
+$(CONCAT_OBJ): $(CONCAT_SRC) $(CONCAT_HEADER)
+	$(CC) $(CONCAT_CFLAGS) $(CONCAT_CPPFLAGS) -c $(CONCAT_SRC) -o $@
+
+$(CONCAT_LIB): $(CONCAT_OBJ)
+	$(AR) rcs $@ $<
+
+test_universal_concat.x: tests/test_universal_concat.c $(CONCAT_WORKLOADS) $(CONCAT_HEADER) $(CONCAT_LIB)
+	$(CC) $(CONCAT_CFLAGS) $(CONCAT_CPPFLAGS) $< $(CONCAT_LIB) -o $@
+
+test_universal_concat_cpp.x: tests/test_universal_concat_cpp.cpp $(CONCAT_HEADER) $(CONCAT_LIB)
+	$(CXX) -std=c++11 -Wall -Wextra -Wpedantic -Iinclude $< $(CONCAT_LIB) -o $@
+
+check-concat: test_universal_concat.x test_universal_concat_cpp.x
+	./test_universal_concat.x
+	./test_universal_concat_cpp.x
+
+check-concat-portable:
+	$(CC) $(CONCAT_CFLAGS) $(CONCAT_CPPFLAGS) -DUC_DISABLE_AVX2 $(CONCAT_SRC) tests/test_universal_concat.c -o test_universal_concat_portable.x
+	./test_universal_concat_portable.x
+
+check-concat-sanitize:
+	$(CC) -O1 -g -std=c11 -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer $(CONCAT_CPPFLAGS) $(CONCAT_SRC) tests/test_universal_concat.c -o test_universal_concat_sanitize.x
+	ASAN_OPTIONS=detect_leaks=1 ./test_universal_concat_sanitize.x
+
+bench-concat: bench_universal_concat.x
+bench_universal_concat.x: benchmarks/bench_universal_concat.c $(CONCAT_WORKLOADS) $(CONCAT_HEADER) $(CONCAT_LIB)
+	$(CC) $(CONCAT_CFLAGS) $(CONCAT_CPPFLAGS) $< $(CONCAT_LIB) -o $@
+
+# Extend the existing aggregates without changing their recipes.
+all: $(CONCAT_LIB)
+kernels: $(CONCAT_LIB)
+test: check-concat
