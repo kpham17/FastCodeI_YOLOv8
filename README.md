@@ -54,3 +54,11 @@ The checked implementation uses cached AVX2 with a portable fallback and
 covers all eleven standalone YOLOv8n joins at 640/1024/2048 input sizes.
 Build with `make concat`; run `make check-concat` and
 `make check-concat-portable`. See the [API, benchmark and integration guide](docs/universal_concat.md).
+
+## Standalone bottleneck residual addition
+
+Add FP32 NHWC convolution output and a dense or strided shortcut with
+`residual_add_contiguous` / `residual_add_strided`. In-place output is supported;
+the shortcut is preserved for C2f concatenation. Production is one C file and
+one header. Build with `make residual`; test with `make check-residual`.
+See the [API and consistency guide](docs/residual_add.md).

@@ -63,7 +63,7 @@ test: $(TEST_BIN) check-upconcat-isa
 	./benchmark.x
 
 clean:
-	rm -f $(TEST_BIN) benchmark_conv_strided.x $(KERNEL_LIB) $(UPCONCAT_LIB) $(CONCAT_OBJ) $(CONCAT_LIB) $(CONCAT_TEST_BIN)
+	rm -f $(TEST_BIN) benchmark_conv_strided.x $(KERNEL_LIB) $(UPCONCAT_LIB) $(CONCAT_OBJ) $(CONCAT_LIB) $(CONCAT_TEST_BIN) $(RESIDUAL_OBJ) $(RESIDUAL_LIB) $(RESIDUAL_TEST_BIN)
 
 # Standalone concat keeps fallback code free of global -march/AVX flags.
 CONCAT_CFLAGS ?= -O3 -std=c11 -Wall -Wextra -Wpedantic -mtune=skylake-avx512
@@ -110,3 +110,48 @@ bench_universal_concat.x: benchmarks/bench_universal_concat.c $(CONCAT_WORKLOADS
 all: $(CONCAT_LIB)
 kernels: $(CONCAT_LIB)
 test: check-concat
+
+# Residual add: keep ISA checks valid by avoiding global -march/AVX flags.
+RESIDUAL_CFLAGS ?= -O3 -std=c11 -Wall -Wextra -Wpedantic -fno-fast-math -ffp-contract=off
+RESIDUAL_CPU ?= 0
+RESIDUAL_SRC = kernels/residual_add.c
+RESIDUAL_HEADER = include/residual_add.h
+RESIDUAL_OBJ = kernels/residual_add.o
+RESIDUAL_LIB = kernels/libresidual_add.a
+RESIDUAL_TEST_BIN = test_residual_add.x test_residual_add_cpp.x bench_residual_add.x test_residual_add_sanitize.x
+
+.PHONY: residual check-residual bench-residual check-residual-sanitize
+residual: $(RESIDUAL_LIB)
+
+$(RESIDUAL_OBJ): $(RESIDUAL_SRC) $(RESIDUAL_HEADER)
+	$(CC) $(RESIDUAL_CFLAGS) -Iinclude -c $(RESIDUAL_SRC) -o $@
+
+$(RESIDUAL_LIB): $(RESIDUAL_OBJ)
+	$(AR) rcs $@ $<
+
+test_residual_add.x: tests/test_residual_add.c $(RESIDUAL_HEADER) $(RESIDUAL_LIB)
+	$(CC) $(RESIDUAL_CFLAGS) -Iinclude $< $(RESIDUAL_LIB) -o $@ -lm
+
+test_residual_add_cpp.x: tests/test_residual_add_cpp.cpp $(RESIDUAL_HEADER) $(RESIDUAL_LIB)
+	$(CXX) -std=c++11 -Wall -Wextra -Wpedantic -Iinclude $< $(RESIDUAL_LIB) -o $@
+
+check-residual: test_residual_add.x test_residual_add_cpp.x
+	taskset -c $(RESIDUAL_CPU) ./test_residual_add.x
+	taskset -c $(RESIDUAL_CPU) ./test_residual_add_cpp.x
+
+bench_residual_add.x: benchmarks/bench_residual_add.c $(RESIDUAL_HEADER) $(RESIDUAL_LIB)
+	$(CC) $(RESIDUAL_CFLAGS) -Iinclude $< $(RESIDUAL_LIB) -o $@
+
+bench-residual: bench_residual_add.x
+	taskset -c $(RESIDUAL_CPU) ./bench_residual_add.x
+
+# ece020 lacks GCC's libasan; use CC=clang for this optional source check.
+check-residual-sanitize:
+	$(CC) -O1 -g -std=c11 -Wno-attributes -fno-omit-frame-pointer \
+		-fsanitize=address,undefined -fno-fast-math -ffp-contract=off -Iinclude \
+		$(RESIDUAL_SRC) tests/test_residual_add.c -o test_residual_add_sanitize.x -lm
+	ASAN_OPTIONS=detect_leaks=0 taskset -c $(RESIDUAL_CPU) ./test_residual_add_sanitize.x
+
+all: $(RESIDUAL_LIB)
+kernels: $(RESIDUAL_LIB)
+test: check-residual

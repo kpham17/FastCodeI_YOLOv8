@@ -86,3 +86,9 @@ test_universal_concat_cpp.x
 test_universal_concat_portable.x
 test_universal_concat_sanitize.x
 bench_universal_concat.x
+
+# Standalone residual-add generated executables
+test_residual_add.x
+test_residual_add_cpp.x
+test_residual_add_sanitize.x
+bench_residual_add.x
