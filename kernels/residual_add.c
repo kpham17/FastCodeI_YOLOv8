@@ -7,15 +7,12 @@
 #include "residual_add.h"
 #include <immintrin.h>
 #include <stdint.h>
-
 #if !defined(__x86_64__) || !(defined(__GNUC__) || defined(__clang__))
 #error "This optimized submission targets x86-64 GCC/Clang."
 #endif
-
 #define AVX2   __attribute__((target("avx2")))
 #define AVX512 __attribute__((target("avx512f")))
 #define ALWAYS_INLINE __attribute__((always_inline)) inline
-
 /* Scalar reference/fallback. The compiler is asked not to vectorize this
  * routine so tests also compare against a truly scalar implementation. */
 __attribute__((optimize("no-tree-vectorize")))
@@ -25,7 +22,6 @@ static void add_scalar(float *d, const float *a, const float *b,
         for (size_t c = 0; c < C; ++c)
             d[p*C + c] = a[p*C + c] + b[p*pitch + c];
 }
-
 /* Four AVX2 operations per iteration; the dense case is one linear stream.
  * For other pitches the fallback still vectorizes within each pixel. */
 AVX2 static void add_avx2(float *d, const float *a, const float *b,
@@ -52,7 +48,6 @@ AVX2 static void add_avx2(float *d, const float *a, const float *b,
         }
     }
 }
-
 /* Wide vectors are selected only for the small dense shapes measured faster. */
 AVX512 static void add_avx512_dense(float *d, const float *a,
                                     const float *b, size_t n) {
@@ -66,7 +61,6 @@ AVX512 static void add_avx512_dense(float *d, const float *a,
             _mm512_loadu_ps(a+i), _mm512_loadu_ps(b+i)));
     for (; i<n; ++i) d[i]=a[i]+b[i];
 }
-
 /* Preserve the generic pixel loop: GCC 8 specialization was slower at 640 P4. */
 AVX512 __attribute__((noipa))
 static void add_avx512_by_pixel(float *d, const float *a, const float *b,
@@ -79,21 +73,134 @@ static void add_avx512_by_pixel(float *d, const float *a, const float *b,
         for (; c<C; ++c) d[i+c]=a[i+c]+b[s+c];
     }
 }
-
-/* Vector R starts at dense byte offset R*32. Every C shortcut floats are
- * followed by C skipped floats, giving R*32 + floor(R*8/C)*C*4 bytes.
- * GAS evaluates the expression at assembly time. Keep loads, then adds,
- * then stores: the simpler interleaved schedule lost on these strided cases. */
-#define REGS(OP,C) \
-    OP(0,C) OP(1,C) OP(2,C) OP(3,C) OP(4,C) OP(5,C) OP(6,C) OP(7,C) \
-    OP(8,C) OP(9,C) OP(10,C) OP(11,C) OP(12,C) OP(13,C) OP(14,C) OP(15,C)
-#define LOAD(R,C) "vmovups " #R "*32(%[a]), %%ymm" #R "\n\t"
-#define ADD(R,C) "vaddps " #R "*32+(" #R "*8/" #C ")*" #C \
-    "*4(%[b]), %%ymm" #R ", %%ymm" #R "\n\t"
-#define STORE(R,C) "vmovups %%ymm" #R ", " #R "*32(%[d])\n\t"
+/* Register/register AVX2 variant for 128-output strided tiles.
+ * Process each tile in two 64-float halves (8 + 8 YMM registers).
+ * Every addressing displacement below is a literal BYTE offset.
+ * No index multiply or shortcut-address calculation occurs inside this asm.
+ * Loads of both inputs complete before any vaddps; stores follow the adds.
+ */
+#define A_LOAD_0 \
+    "vmovups 0(%[a]), %%ymm0\n\t" \
+    "vmovups 32(%[a]), %%ymm1\n\t" \
+    "vmovups 64(%[a]), %%ymm2\n\t" \
+    "vmovups 96(%[a]), %%ymm3\n\t" \
+    "vmovups 128(%[a]), %%ymm4\n\t" \
+    "vmovups 160(%[a]), %%ymm5\n\t" \
+    "vmovups 192(%[a]), %%ymm6\n\t" \
+    "vmovups 224(%[a]), %%ymm7\n\t"
+#define B_LOAD_0_C16 \
+    "vmovups 0(%[b]), %%ymm8\n\t" \
+    "vmovups 32(%[b]), %%ymm9\n\t" \
+    "vmovups 128(%[b]), %%ymm10\n\t" \
+    "vmovups 160(%[b]), %%ymm11\n\t" \
+    "vmovups 256(%[b]), %%ymm12\n\t" \
+    "vmovups 288(%[b]), %%ymm13\n\t" \
+    "vmovups 384(%[b]), %%ymm14\n\t" \
+    "vmovups 416(%[b]), %%ymm15\n\t"
+#define B_LOAD_0_C32 \
+    "vmovups 0(%[b]), %%ymm8\n\t" \
+    "vmovups 32(%[b]), %%ymm9\n\t" \
+    "vmovups 64(%[b]), %%ymm10\n\t" \
+    "vmovups 96(%[b]), %%ymm11\n\t" \
+    "vmovups 256(%[b]), %%ymm12\n\t" \
+    "vmovups 288(%[b]), %%ymm13\n\t" \
+    "vmovups 320(%[b]), %%ymm14\n\t" \
+    "vmovups 352(%[b]), %%ymm15\n\t"
+#define B_LOAD_0_C64 \
+    "vmovups 0(%[b]), %%ymm8\n\t" \
+    "vmovups 32(%[b]), %%ymm9\n\t" \
+    "vmovups 64(%[b]), %%ymm10\n\t" \
+    "vmovups 96(%[b]), %%ymm11\n\t" \
+    "vmovups 128(%[b]), %%ymm12\n\t" \
+    "vmovups 160(%[b]), %%ymm13\n\t" \
+    "vmovups 192(%[b]), %%ymm14\n\t" \
+    "vmovups 224(%[b]), %%ymm15\n\t"
+#define B_LOAD_0_C128 \
+    "vmovups 0(%[b]), %%ymm8\n\t" \
+    "vmovups 32(%[b]), %%ymm9\n\t" \
+    "vmovups 64(%[b]), %%ymm10\n\t" \
+    "vmovups 96(%[b]), %%ymm11\n\t" \
+    "vmovups 128(%[b]), %%ymm12\n\t" \
+    "vmovups 160(%[b]), %%ymm13\n\t" \
+    "vmovups 192(%[b]), %%ymm14\n\t" \
+    "vmovups 224(%[b]), %%ymm15\n\t"
+#define STORE_0 \
+    "vmovups %%ymm0, 0(%[d])\n\t" \
+    "vmovups %%ymm1, 32(%[d])\n\t" \
+    "vmovups %%ymm2, 64(%[d])\n\t" \
+    "vmovups %%ymm3, 96(%[d])\n\t" \
+    "vmovups %%ymm4, 128(%[d])\n\t" \
+    "vmovups %%ymm5, 160(%[d])\n\t" \
+    "vmovups %%ymm6, 192(%[d])\n\t" \
+    "vmovups %%ymm7, 224(%[d])\n\t"
+#define A_LOAD_1 \
+    "vmovups 256(%[a]), %%ymm0\n\t" \
+    "vmovups 288(%[a]), %%ymm1\n\t" \
+    "vmovups 320(%[a]), %%ymm2\n\t" \
+    "vmovups 352(%[a]), %%ymm3\n\t" \
+    "vmovups 384(%[a]), %%ymm4\n\t" \
+    "vmovups 416(%[a]), %%ymm5\n\t" \
+    "vmovups 448(%[a]), %%ymm6\n\t" \
+    "vmovups 480(%[a]), %%ymm7\n\t"
+#define B_LOAD_1_C16 \
+    "vmovups 512(%[b]), %%ymm8\n\t" \
+    "vmovups 544(%[b]), %%ymm9\n\t" \
+    "vmovups 640(%[b]), %%ymm10\n\t" \
+    "vmovups 672(%[b]), %%ymm11\n\t" \
+    "vmovups 768(%[b]), %%ymm12\n\t" \
+    "vmovups 800(%[b]), %%ymm13\n\t" \
+    "vmovups 896(%[b]), %%ymm14\n\t" \
+    "vmovups 928(%[b]), %%ymm15\n\t"
+#define B_LOAD_1_C32 \
+    "vmovups 512(%[b]), %%ymm8\n\t" \
+    "vmovups 544(%[b]), %%ymm9\n\t" \
+    "vmovups 576(%[b]), %%ymm10\n\t" \
+    "vmovups 608(%[b]), %%ymm11\n\t" \
+    "vmovups 768(%[b]), %%ymm12\n\t" \
+    "vmovups 800(%[b]), %%ymm13\n\t" \
+    "vmovups 832(%[b]), %%ymm14\n\t" \
+    "vmovups 864(%[b]), %%ymm15\n\t"
+#define B_LOAD_1_C64 \
+    "vmovups 512(%[b]), %%ymm8\n\t" \
+    "vmovups 544(%[b]), %%ymm9\n\t" \
+    "vmovups 576(%[b]), %%ymm10\n\t" \
+    "vmovups 608(%[b]), %%ymm11\n\t" \
+    "vmovups 640(%[b]), %%ymm12\n\t" \
+    "vmovups 672(%[b]), %%ymm13\n\t" \
+    "vmovups 704(%[b]), %%ymm14\n\t" \
+    "vmovups 736(%[b]), %%ymm15\n\t"
+#define B_LOAD_1_C128 \
+    "vmovups 256(%[b]), %%ymm8\n\t" \
+    "vmovups 288(%[b]), %%ymm9\n\t" \
+    "vmovups 320(%[b]), %%ymm10\n\t" \
+    "vmovups 352(%[b]), %%ymm11\n\t" \
+    "vmovups 384(%[b]), %%ymm12\n\t" \
+    "vmovups 416(%[b]), %%ymm13\n\t" \
+    "vmovups 448(%[b]), %%ymm14\n\t" \
+    "vmovups 480(%[b]), %%ymm15\n\t"
+#define STORE_1 \
+    "vmovups %%ymm0, 256(%[d])\n\t" \
+    "vmovups %%ymm1, 288(%[d])\n\t" \
+    "vmovups %%ymm2, 320(%[d])\n\t" \
+    "vmovups %%ymm3, 352(%[d])\n\t" \
+    "vmovups %%ymm4, 384(%[d])\n\t" \
+    "vmovups %%ymm5, 416(%[d])\n\t" \
+    "vmovups %%ymm6, 448(%[d])\n\t" \
+    "vmovups %%ymm7, 480(%[d])\n\t"
+#define ADD_REG_REG \
+    "vaddps %%ymm8, %%ymm0, %%ymm0\n\t" \
+    "vaddps %%ymm9, %%ymm1, %%ymm1\n\t" \
+    "vaddps %%ymm10, %%ymm2, %%ymm2\n\t" \
+    "vaddps %%ymm11, %%ymm3, %%ymm3\n\t" \
+    "vaddps %%ymm12, %%ymm4, %%ymm4\n\t" \
+    "vaddps %%ymm13, %%ymm5, %%ymm5\n\t" \
+    "vaddps %%ymm14, %%ymm6, %%ymm6\n\t" \
+    "vaddps %%ymm15, %%ymm7, %%ymm7\n\t"
 #define DEFINE_TILE(C) \
 AVX2 static ALWAYS_INLINE void block_ymm_##C(float*d,const float*a,const float*b) { \
-    __asm__ __volatile__(REGS(LOAD,C) REGS(ADD,C) REGS(STORE,C) \
+    __asm__ __volatile__( \
+        A_LOAD_0 B_LOAD_0_C##C ADD_REG_REG STORE_0 \
+        A_LOAD_1 B_LOAD_1_C##C ADD_REG_REG STORE_1 \
         : : [a] "r"(a), [b] "r"(b), [d] "r"(d) \
         : "memory", "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", \
           "ymm6", "ymm7", "ymm8", "ymm9", "ymm10", "ymm11", \
@@ -104,57 +211,60 @@ DEFINE_TILE(32)
 DEFINE_TILE(64)
 DEFINE_TILE(128)
 #undef DEFINE_TILE
-#undef REGS
-#undef LOAD
-#undef ADD
-#undef STORE
-
-/* One shared case describes each 128-output tile. The shortcut prefetch
- * starts 4 KiB ahead; COUNT bounds every prefetched pixel inside the view.
- * PREFETCH is constant, so the plain variant contains no prefetch branch. */
+#undef A_LOAD_0
+#undef A_LOAD_1
+#undef STORE_0
+#undef STORE_1
+#undef ADD_REG_REG
+#undef B_LOAD_0_C16
+#undef B_LOAD_0_C32
+#undef B_LOAD_0_C64
+#undef B_LOAD_0_C128
+#undef B_LOAD_1_C16
+#undef B_LOAD_1_C32
+#undef B_LOAD_1_C64
+#undef B_LOAD_1_C128
+/* One tile = 128 FP32 outputs, regardless of C.  Tile pointers advance
+ * by fixed strides (128, 128, 256 floats).  Both hot loops count DOWN to
+ * zero; the prefetch loop runs only while all prefetch addresses are valid.
+ * Keep the original register/register 8+8-YMM arithmetic unchanged.
+ */
 #define STRIDED_CASE(CH, STEP, AHEAD, COUNT, PREFETCH) \
     case CH: { \
-        size_t p=0; \
-        for (; pixels-p>=STEP; p+=STEP) { \
-            if ((PREFETCH) && pixels-p>AHEAD+COUNT-1) \
-                for (size_t k=AHEAD; k<AHEAD+COUNT; ++k) \
-                    _mm_prefetch((const char*)(b+(p+k)*(2*CH)),_MM_HINT_T0); \
-            block_ymm_##CH(d+p*CH,a+p*CH,b+p*(2*CH)); \
+        const size_t tiles = pixels / (STEP); \
+        size_t pf_tiles = 0; \
+        if (PREFETCH) { \
+            const size_t safe = (pixels >= (AHEAD)+(COUNT)) \
+                ? pixels - ((AHEAD)+(COUNT)-1) : 0; \
+            pf_tiles = (safe + (STEP)-1) / (STEP); \
+            for (size_t left=pf_tiles; left!=0; --left) { \
+                for (size_t k=AHEAD; k<(AHEAD)+(COUNT); ++k) \
+                    _mm_prefetch((const char*)(b+k*(2*CH)),_MM_HINT_T0); \
+                block_ymm_##CH(d,a,b); \
+                d+=128; a+=128; b+=256; \
+            } \
         } \
-        if (p<pixels) add_avx2(d+p*CH,a+p*CH,b+p*(2*CH),pixels-p,CH,2*CH); \
+        for (size_t left=tiles-pf_tiles; left!=0; --left) { \
+            block_ymm_##CH(d,a,b); \
+            d+=128; a+=128; b+=256; \
+        } \
+        if (pixels % (STEP)) \
+            add_avx2(d,a,b,pixels % (STEP),CH,2*CH); \
         break; \
     }
-#define STRIDED_2C_IMPL(NAME, PREFETCH) \
+#define STRIDED_2C_IMPL(NAME,PREFETCH) \
 AVX2 static void NAME(float*d,const float*a,const float*b,size_t pixels,size_t C) { \
-    switch (C) { \
+    switch(C) { \
         STRIDED_CASE(16,8,32,4,PREFETCH) \
         STRIDED_CASE(32,4,16,4,PREFETCH) \
-        case 64: { \
-            size_t p=0; \
-            for (;pixels-p>=2;p+=2) { \
-                if ((PREFETCH) && pixels-p>9) { \
-                    _mm_prefetch((const char*)(b+(p+8)*128),_MM_HINT_T0); \
-                    _mm_prefetch((const char*)(b+(p+9)*128),_MM_HINT_T0); \
-                } \
-                block_ymm_64(d+p*64,a+p*64,b+p*128); \
-            } \
-            if (p<pixels) add_avx2(d+p*64,a+p*64,b+p*128,pixels-p,64,128); \
-            break; \
-        } \
-        case 128: \
-            for (size_t p=0;p<pixels;++p) { \
-                if ((PREFETCH) && pixels-p>4) \
-                    _mm_prefetch((const char*)(b+(p+4)*256),_MM_HINT_T0); \
-                block_ymm_128(d+p*128,a+p*128,b+p*256); \
-            } \
-            break; \
+        STRIDED_CASE(64,2,8,2,PREFETCH) \
+        STRIDED_CASE(128,1,4,1,PREFETCH) \
     } \
 }
 STRIDED_2C_IMPL(strided_disp,0)
 STRIDED_2C_IMPL(strided_pf4k,1)
 #undef STRIDED_2C_IMPL
 #undef STRIDED_CASE
-
 /* 2048 P5 view favors an interleaved AVX2 loop. The prefetch remains inside
  * a future shortcut pixel; all arithmetic loads/stores allow misalignment. */
 AVX2 static void p5_interleaved(float*d,const float*a,const float*b,size_t P) {
@@ -166,7 +276,6 @@ AVX2 static void p5_interleaved(float*d,const float*a,const float*b,size_t P) {
                 _mm256_loadu_ps(a+p*128+c),_mm256_loadu_ps(b+p*256+c)));
     }
 }
-
 /* Two cache-sized 2048 dense tensors favor the generic pixel loop over the
  * flattened unroll with aligned in-place buffers. Other buffers keep the old
  * path. Prevent IPA specialization, matching the measured control. */
@@ -182,13 +291,11 @@ static void add_avx2_by_pixel(float*d,const float*a,const float*b,
         d+=C;a+=C;b+=S;
     }
 }
-
 /* Runtime dispatch is deliberately short; shapes outside the model remain
  * correct through the scalar/AVX2 fallback. No copies or scratch buffers. */
 void residual_add_contiguous(float *dst, const float *conv,
                              const float *shortcut, size_t pixels, size_t C) {
     if (!pixels || !C) return;
-    __builtin_cpu_init();
     const int small_avx512 = (C==64 && pixels==1600) ||
         (C==128 && (pixels==400 || pixels==1024));
     if (small_avx512 && __builtin_cpu_supports("avx512f")) {
@@ -205,12 +312,10 @@ void residual_add_contiguous(float *dst, const float *conv,
     } else
         add_scalar(dst,conv,shortcut,pixels,C,C);
 }
-
 void residual_add_strided(float *dst, const float *conv,
                           const float *shortcut, size_t pixels,
                           size_t C, size_t pitch) {
     if (!pixels || !C) return;
-    __builtin_cpu_init();
     if (!__builtin_cpu_supports("avx2")) {
         add_scalar(dst,conv,shortcut,pixels,C,pitch); return;
     }
