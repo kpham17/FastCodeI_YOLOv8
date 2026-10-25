@@ -1,5 +1,5 @@
 CC ?= gcc
-CFLAGS ?= -std=c11 -march=native -O3  -mavx2 -mfma 
+CFLAGS ?= -std=c11 -march=native -O3 -mavx2 -mfma -mavx512f
 LDLIBS ?= -lm
 PYTHON ?= python3
 # VL_MIXED uses 256-bit moves and AVX-512VL's extra YMM registers.
