@@ -1,4 +1,7 @@
+#include <immintrin.h>
+#include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "../include/batchnorm.h"
 #include "../include/maxpool.h"
@@ -16,19 +19,94 @@ int fast_batchnorm(
     const float *beta,
     float epsilon)
 {
-    (void)input;
-    (void)output;
-    (void)N;
-    (void)H;
-    (void)W;
-    (void)C;
-    (void)running_mean;
-    (void)running_var;
-    (void)gamma;
-    (void)beta;
-    (void)epsilon;
-    fprintf(stderr, "fast_batchnorm is a skeleton; implement the kernel first\n");
-    return -1;
+    if (!input || !output || !running_mean || !running_var || !gamma || !beta) {
+        return -1;
+    }
+    if (N <= 0 || H <= 0 || W <= 0 || C <= 0) {
+        return -1;
+    }
+
+    float stack_scale[2048] __attribute__((aligned(64)));
+    float stack_bias[2048] __attribute__((aligned(64)));
+    float *scale = stack_scale;
+    float *bias = stack_bias;
+    int allocated = 0;
+
+    if (C > 2048) {
+        size_t bytes = (size_t)C * sizeof(float);
+        size_t aligned_bytes = (bytes + 63) & ~(size_t)63;
+        scale = (float *)aligned_alloc(64, aligned_bytes);
+        bias = (float *)aligned_alloc(64, aligned_bytes);
+        if (!scale || !bias) {
+            free(scale);
+            free(bias);
+            return -1;
+        }
+        allocated = 1;
+    }
+
+    for (int c = 0; c < C; ++c) {
+        float inv_std = 1.0f / sqrtf(running_var[c] + epsilon);
+        scale[c] = gamma[c] * inv_std;
+        bias[c] = beta[c] - running_mean[c] * scale[c];
+    }
+
+    size_t total_pixels = (size_t)N * H * W;
+    for (size_t i = 0; i < total_pixels; ++i) {
+        const float *input_pixel = input + i * C;
+        float *output_pixel = output + i * C;
+        int c = 0;
+
+        for (; c <= C - 64; c += 64) {
+            __m512 s0 = _mm512_load_ps(&scale[c + 0]);
+            __m512 b0 = _mm512_load_ps(&bias[c + 0]);
+            __m512 s1 = _mm512_load_ps(&scale[c + 16]);
+            __m512 b1 = _mm512_load_ps(&bias[c + 16]);
+            __m512 s2 = _mm512_load_ps(&scale[c + 32]);
+            __m512 b2 = _mm512_load_ps(&bias[c + 32]);
+            __m512 s3 = _mm512_load_ps(&scale[c + 48]);
+            __m512 b3 = _mm512_load_ps(&bias[c + 48]);
+
+            __m512 x0 = _mm512_loadu_ps(input_pixel + c + 0);
+            __m512 x1 = _mm512_loadu_ps(input_pixel + c + 16);
+            __m512 x2 = _mm512_loadu_ps(input_pixel + c + 32);
+            __m512 x3 = _mm512_loadu_ps(input_pixel + c + 48);
+
+            __m512 y0 = _mm512_fmadd_ps(x0, s0, b0);
+            __m512 y1 = _mm512_fmadd_ps(x1, s1, b1);
+            __m512 y2 = _mm512_fmadd_ps(x2, s2, b2);
+            __m512 y3 = _mm512_fmadd_ps(x3, s3, b3);
+
+            _mm512_storeu_ps(output_pixel + c + 0, y0);
+            _mm512_storeu_ps(output_pixel + c + 16, y1);
+            _mm512_storeu_ps(output_pixel + c + 32, y2);
+            _mm512_storeu_ps(output_pixel + c + 48, y3);
+        }
+
+        for (; c <= C - 16; c += 16) {
+            __m512 s = _mm512_load_ps(&scale[c]);
+            __m512 b = _mm512_load_ps(&bias[c]);
+            __m512 x = _mm512_loadu_ps(input_pixel + c);
+            __m512 y = _mm512_fmadd_ps(x, s, b);
+            _mm512_storeu_ps(output_pixel + c, y);
+        }
+
+        if (c < C) {
+            int remainder = C - c;
+            __mmask16 mask = (__mmask16)((1U << remainder) - 1);
+            __m512 s = _mm512_maskz_load_ps(mask, &scale[c]);
+            __m512 b = _mm512_maskz_load_ps(mask, &bias[c]);
+            __m512 x = _mm512_maskz_loadu_ps(mask, input_pixel + c);
+            __m512 y = _mm512_fmadd_ps(x, s, b);
+            _mm512_mask_storeu_ps(output_pixel + c, mask, y);
+        }
+    }
+
+    if (allocated) {
+        free(scale);
+        free(bias);
+    }
+    return 0;
 }
 
 int fast_maxpool2d(
