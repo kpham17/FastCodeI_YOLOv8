@@ -140,9 +140,9 @@ int fast_maxpool2d(
     for (int n = 0; n < N; ++n) {
         for (int c = 0; c < C; ++c) {
             if (can_use_fast_tile) {
-                for (int oh = 0; oh <= H_out - 10; oh += 10) {
+                for (int oh = 0; oh <= H_out - 12; oh += 12) {
                     int ih = oh - padding_h;
-                    if (ih < 0 || ih + 14 > H) continue;
+                    if (ih < 0 || ih + 16 > H) continue;
 
                     for (int ow = 0; ow <= W_out - 12; ow += 12) {
                         int iw = ow - padding_w;
@@ -152,7 +152,7 @@ int fast_maxpool2d(
                             &input[((n * H + ih) * W + iw) * C + c];
                         float *out_ptr =
                             &output[((n * H_out + oh) * W_out + ow) * C + c];
-                        maxpool_tile_14x16_avx512(in_ptr, out_ptr, W, W_out);
+                        maxpool_tile_16x16_avx512(in_ptr, out_ptr, W, W_out);
                     }
                 }
             }
@@ -161,14 +161,14 @@ int fast_maxpool2d(
                 for (int ow = 0; ow < W_out; ++ow) {
                     int covered_by_fast_tile = 0;
                     if (can_use_fast_tile) {
-                        int tile_oh = (oh / 10) * 10;
+                        int tile_oh = (oh / 12) * 12;
                         int tile_ow = (ow / 12) * 12;
                         int ih = tile_oh - padding_h;
                         int iw = tile_ow - padding_w;
                         covered_by_fast_tile =
-                            tile_oh <= H_out - 10 &&
+                            tile_oh <= H_out - 12 &&
                             tile_ow <= W_out - 12 &&
-                            ih >= 0 && ih + 14 <= H &&
+                            ih >= 0 && ih + 16 <= H &&
                             iw >= 0 && iw + 16 <= W;
                     }
                     if (covered_by_fast_tile) {
@@ -182,6 +182,45 @@ int fast_maxpool2d(
                         padding_h, padding_w);
                 }
             }
+        }
+    }
+    return 0;
+}
+
+int fast_maxpool2d_planar(
+    const float *input,
+    float *output,
+    int N,
+    int H,
+    int W,
+    int C,
+    int kernel_h,
+    int kernel_w,
+    int stride_h,
+    int stride_w,
+    int padding_h,
+    int padding_w)
+{
+    if (!input || !output || N <= 0 || H <= 0 || W <= 0 || C <= 0) {
+        return -1;
+    }
+
+    int H_out = (H + 2 * padding_h - kernel_h) / stride_h + 1;
+    int W_out = (W + 2 * padding_w - kernel_w) / stride_w + 1;
+    if (H_out <= 0 || W_out <= 0) return -1;
+
+    size_t input_plane = (size_t)H * W;
+    size_t output_plane = (size_t)H_out * W_out;
+    for (int n = 0; n < N; ++n) {
+        for (int c = 0; c < C; ++c) {
+            size_t plane = (size_t)n * C + c;
+            int status = fast_maxpool2d(
+                input + plane * input_plane,
+                output + plane * output_plane,
+                1, H, W, 1,
+                kernel_h, kernel_w, stride_h, stride_w,
+                padding_h, padding_w);
+            if (status != 0) return status;
         }
     }
     return 0;

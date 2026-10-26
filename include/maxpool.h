@@ -34,63 +34,81 @@ static inline float scalar_maxpool_pixel(
     return max_val;
 }
 
-// Optimized 14x16 Input -> 10x12 Output AVX-512 Kernel
-// Assumes a 5x5 kernel, stride 1, pad 2, and unit channel stride (C=1 or contiguous spatial loads)
-static inline void maxpool_tile_14x16_avx512(
+static inline __m512 maxpool_horizontal_5(__m512 v)
+{
+    __m512i vi = _mm512_castps_si512(v);
+    __m512 h = v;
+    __m512 shift = _mm512_castsi512_ps(_mm512_alignr_epi32(vi, vi, 14));
+    h = _mm512_max_ps(h, shift);
+    shift = _mm512_castsi512_ps(_mm512_alignr_epi32(vi, vi, 15));
+    h = _mm512_max_ps(h, shift);
+    __m512 right1 = _mm512_castsi512_ps(_mm512_alignr_epi32(vi, vi, 1));
+    __m512 right2 = _mm512_castsi512_ps(_mm512_alignr_epi32(vi, vi, 2));
+    h = _mm512_max_ps(_mm512_max_ps(h, right1), right2);
+    __m512i hi = _mm512_castps_si512(h);
+    return _mm512_castsi512_ps(_mm512_alignr_epi32(hi, hi, 2));
+}
+
+// Optimized 16x16 Input -> 12x12 Output AVX-512 kernel.
+// This tile is valid only for one contiguous spatial plane. It must not be
+// applied directly to interleaved NHWC data with C > 1.
+static inline void maxpool_tile_16x16_avx512(
     const float *in_ptr,
     float *out_ptr,
     int in_stride_h,
     int out_stride_h)
 {
-    __m512 in[14];
+    __m512 in[16];
 
-    // 1. Issue 14 Vector Loads into ZMM0..ZMM13
+    // Keep all input rows live while four independent vertical reductions run.
     #pragma unroll
-    for (int r = 0; r < 14; ++r) {
+    for (int r = 0; r < 16; ++r) {
         in[r] = _mm512_loadu_ps(in_ptr + r * in_stride_h);
     }
 
-    // 2. Stage 1: Vertical 5x1 Reduction across 10 Output Rows (Ports 0 & 1)
-    __m512 v_max[10];
-    #pragma unroll
-    for (int r = 0; r < 10; ++r) {
-        __m512 m01   = _mm512_max_ps(in[r + 0], in[r + 1]);
-        __m512 m23   = _mm512_max_ps(in[r + 2], in[r + 3]);
-        __m512 m0123 = _mm512_max_ps(m01, m23);
-        v_max[r]     = _mm512_max_ps(m0123, in[r + 4]);
+    const __mmask16 store_mask = 0x0FFF;
+    for (int r = 0; r < 12; r += 4) {
+        __m512 v0 = _mm512_max_ps(
+            _mm512_max_ps(_mm512_max_ps(in[r], in[r + 1]), in[r + 2]),
+            _mm512_max_ps(in[r + 3], in[r + 4]));
+        __m512 v1 = _mm512_max_ps(
+            _mm512_max_ps(_mm512_max_ps(in[r + 1], in[r + 2]), in[r + 3]),
+            _mm512_max_ps(in[r + 4], in[r + 5]));
+        __m512 v2 = _mm512_max_ps(
+            _mm512_max_ps(_mm512_max_ps(in[r + 2], in[r + 3]), in[r + 4]),
+            _mm512_max_ps(in[r + 5], in[r + 6]));
+        __m512 v3 = _mm512_max_ps(
+            _mm512_max_ps(_mm512_max_ps(in[r + 3], in[r + 4]), in[r + 5]),
+            _mm512_max_ps(in[r + 6], in[r + 7]));
+
+        _mm512_mask_storeu_ps(out_ptr + (r + 0) * out_stride_h,
+                              store_mask, maxpool_horizontal_5(v0));
+        _mm512_mask_storeu_ps(out_ptr + (r + 1) * out_stride_h,
+                              store_mask, maxpool_horizontal_5(v1));
+        _mm512_mask_storeu_ps(out_ptr + (r + 2) * out_stride_h,
+                              store_mask, maxpool_horizontal_5(v2));
+        _mm512_mask_storeu_ps(out_ptr + (r + 3) * out_stride_h,
+                              store_mask, maxpool_horizontal_5(v3));
     }
 
-    // 3. Stage 2 & 3: Horizontal 1x5 Shift (Port 5) + Reduction (Ports 0 & 1)
-    const __mmask16 store_mask = 0x0FFF; // Bits 0..11 set (12 valid outputs)
-
-    #pragma unroll
-    for (int r = 0; r < 10; ++r) {
-        __m512 v = v_max[r];
-
-        // Shift relative positions using circular alignr
-        __m512i vi = _mm512_castps_si512(v);
-        __m512 L2 = _mm512_castsi512_ps(_mm512_alignr_epi32(vi, vi, 14)); // i-2
-        __m512 L1 = _mm512_castsi512_ps(_mm512_alignr_epi32(vi, vi, 15)); // i-1
-        __m512 R1 = _mm512_castsi512_ps(_mm512_alignr_epi32(vi, vi, 1));  // i+1
-        __m512 R2 = _mm512_castsi512_ps(_mm512_alignr_epi32(vi, vi, 2));  // i+2
-
-        // Pairwise horizontal max reduction
-        __m512 h_max0  = _mm512_max_ps(L2, L1);
-        __m512 h_max1  = _mm512_max_ps(R1, R2);
-        __m512 h_max2  = _mm512_max_ps(h_max0, h_max1);
-        __m512 h_final = _mm512_max_ps(h_max2, v);
-
-        // Align element 2 to position 0 for masked store
-        __m512i h_final_i = _mm512_castps_si512(h_final);
-        __m512 h_aligned = _mm512_castsi512_ps(
-            _mm512_alignr_epi32(h_final_i, h_final_i, 2));
-
-        // Store 12 valid float32 outputs to L1 memory
-        _mm512_mask_storeu_ps(out_ptr + r * out_stride_h, store_mask, h_aligned);
-    }
 }
 
 int fast_maxpool2d(
+    const float *input,
+    float *output,
+    int N, int H, int W, int C,
+    int kernel_h, int kernel_w,
+    int stride_h, int stride_w,
+    int padding_h, int padding_w);
+
+/*
+ * Max pooling for planar NCHW-style storage:
+ * input[n, c, h, w] is contiguous in w, then h, then c, then n.
+ *
+ * This entry point exists so C=3 data can use the optimized C=1 tile one
+ * plane at a time. It does not accept interleaved NHWC storage.
+ */
+int fast_maxpool2d_planar(
     const float *input,
     float *output,
     int N, int H, int W, int C,

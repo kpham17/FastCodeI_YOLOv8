@@ -27,6 +27,14 @@ The benchmark uses batchnorm inference with running statistics and 2x2
 maxpooling with stride 2. Customize the workload with `--shape N H W C`,
 `--warmups`, and `--repeats`.
 
+The NHWC maxpool API keeps the optimized AVX-512 tile restricted to `C=1`;
+interleaved NHWC data with `C=3` must not be passed to that tile because its
+16-float loads would mix channels and spatial positions. For performance
+experiments that intentionally use planar storage, call
+`fast_maxpool2d_planar`, which applies the optimized single-channel tile to
+each `[H][W]` plane. Any NHWC-to-planar conversion should be measured
+separately or included explicitly when reporting end-to-end performance.
+
 ## Channel-strided convolution
 
 Consume C2f channel chunks without a separate chunk-copy pass using
