@@ -8,7 +8,7 @@ KERNEL_LIB = kernels/libfastkernels.so
 KERNEL_SRC = kernels/batchnorm_maxpool_skeleton.c
 KERNEL_HEADERS = include/batchnorm.h include/maxpool.h
 
-.PHONY: all test kernels benchmark-strided check-upconcat benchmark-upconcat clean
+.PHONY: all test kernels benchmark-strided benchmark-kernels benchmark-libtorch check-upconcat benchmark-upconcat clean
 
 all: $(TEST_BIN)
 
@@ -32,13 +32,39 @@ kernels: $(KERNEL_LIB)
 $(KERNEL_LIB): $(KERNEL_SRC) $(KERNEL_HEADERS)
 	$(CC) $(CFLAGS) -fPIC -shared -o $@ $(KERNEL_SRC)
 
+benchmark-kernels: benchmark_batchnorm_maxpool.x
+	taskset -c $${KERNEL_CPU:-0} ./benchmark_batchnorm_maxpool.x $${KERNEL_CPU:-0}
+
+TORCH_DIR ?= .venv/lib/python3.6/site-packages/torch
+TORCH_CXXFLAGS = -std=c++14 -O3 -D_GLIBCXX_USE_CXX11_ABI=0 \
+	-I$(TORCH_DIR)/include -I$(TORCH_DIR)/include/torch/csrc/api/include
+TORCH_LDFLAGS = -L$(TORCH_DIR)/lib -Wl,-rpath,$(CURDIR)/$(TORCH_DIR)/lib \
+	-ltorch -ltorch_cpu -lc10 -lpthread -ldl
+
+benchmark-libtorch: benchmark_libtorch_kernels.x
+	taskset -c $${KERNEL_CPU:-0} ./benchmark_libtorch_kernels.x \
+		$${KERNEL_CPU:-0} $${KERNEL_REPEATS:-100000}
+
+benchmark_libtorch_kernels.x: benchmarks/bench_libtorch_kernels.cpp \
+		$(KERNEL_SRC) $(KERNEL_HEADERS)
+	$(CC) $(CFLAGS) -fPIC -Iinclude -c $(KERNEL_SRC) -o /tmp/batchnorm_maxpool_libtorch.o
+	$(CXX) $(TORCH_CXXFLAGS) -Iinclude -o $@ \
+		benchmarks/bench_libtorch_kernels.cpp /tmp/batchnorm_maxpool_libtorch.o \
+		$(TORCH_LDFLAGS) -lm
+
+benchmark_batchnorm_maxpool.x: benchmarks/bench_batchnorm_maxpool.c $(KERNEL_SRC) $(KERNEL_HEADERS)
+	$(CC) $(CFLAGS) -Iinclude -o $@ benchmarks/bench_batchnorm_maxpool.c \
+		$(KERNEL_SRC) $(LDLIBS)
+
 test: $(TEST_BIN)
 	./test_correctness.x
 	./test_conv_strided.x
 	./benchmark.x
 
 clean:
-	rm -f $(TEST_BIN) benchmark_conv_strided.x $(KERNEL_LIB) $(CHUNK_OBJ) $(CHUNK_LIB) $(CHUNK_TEST_BIN)
+	rm -f $(TEST_BIN) benchmark_conv_strided.x benchmark_batchnorm_maxpool.x \
+		benchmark_libtorch_kernels.x \
+		$(KERNEL_LIB) $(CHUNK_OBJ) $(CHUNK_LIB) $(CHUNK_TEST_BIN)
 
 # Materialized NHWC channel halves; ece020 AVX2 / AVX-512F target.
 CHUNK_CFLAGS ?= -O3 -std=c11 -Wall -Wextra -Wpedantic -mtune=skylake-avx512
