@@ -3,6 +3,7 @@
 
 import argparse
 import ctypes
+import os
 import time
 from pathlib import Path
 
@@ -62,6 +63,16 @@ def pointer(array):
     return array.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
 
+def chw16(array):
+    n, h, w, c = array.shape
+    blocked = np.zeros((n, (c + 15) // 16, h, w, 16), dtype=np.float32)
+    for block in range((c + 15) // 16):
+        begin = block * 16
+        end = min(begin + 16, c)
+        blocked[:, block, :, :, :end - begin] = array[:, :, :, begin:end]
+    return np.ascontiguousarray(blocked)
+
+
 def print_result(name, flops, pytorch_ms, custom_ms):
     def throughput(milliseconds):
         return flops / (milliseconds * 1e6)
@@ -79,14 +90,30 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--library", type=Path, default=None,
                         help="custom shared library; omit while kernels are skeletons")
-    parser.add_argument("--warmups", type=int, default=10)
-    parser.add_argument("--repeats", type=int, default=50)
+    parser.add_argument("--kernel", choices=("batchnorm", "maxpool", "both"),
+                        default="both",
+                        help="run one kernel or both benchmark paths")
+    parser.add_argument("--warmups", type=int, default=100,
+                        help="warmup calls used to establish L1 residency")
+    parser.add_argument("--repeats", type=int, default=1000,
+                        help="timed calls over the L1-resident working set")
+    parser.add_argument("--cpu", type=int, default=None,
+                        help="pin the benchmark process to one logical CPU")
     parser.add_argument("--shape", nargs=4, type=int, metavar=("N", "H", "W", "C"),
-                        default=(1, 80, 80, 64))
+                        default=(1, 16, 16, 16),
+                        help="use a small L1-resident shape by default")
     args = parser.parse_args()
 
     if args.warmups < 0 or args.repeats <= 0:
         parser.error("--warmups must be non-negative and --repeats must be positive")
+    if args.cpu is not None:
+        if args.cpu < 0:
+            parser.error("--cpu must be non-negative")
+        try:
+            os.sched_setaffinity(0, {args.cpu})
+        except OSError as error:
+            parser.error("cannot pin process to CPU {}: {}".format(
+                args.cpu, error))
     if min(args.shape) <= 0:
         parser.error("all dimensions in --shape must be positive")
     torch.set_grad_enabled(False)
@@ -97,6 +124,7 @@ def main():
     rng = np.random.RandomState(18645)
     input_nhwc = np.ascontiguousarray(
         rng.standard_normal((N, H, W, C)).astype(np.float32))
+    input_chw16 = chw16(input_nhwc)
     running_mean = np.ascontiguousarray(rng.standard_normal(C).astype(np.float32))
     running_var = np.ascontiguousarray((rng.rand(C) + 0.5).astype(np.float32))
     gamma = np.ascontiguousarray(rng.standard_normal(C).astype(np.float32))
@@ -110,7 +138,8 @@ def main():
     bn_call = lambda: functional.batch_norm(
         input_torch, mean_torch, var_torch, gamma_torch, beta_torch,
         training=False, momentum=0.1, eps=1e-5)
-    bn_ms = timed(bn_call, args.warmups, args.repeats)
+    bn_ms = (timed(bn_call, args.warmups, args.repeats)
+             if args.kernel in ("batchnorm", "both") else None)
 
     kernel_h = kernel_w = 2
     stride_h = stride_w = 2
@@ -120,38 +149,46 @@ def main():
     pool_call = lambda: functional.max_pool2d(
         input_torch, (kernel_h, kernel_w), (stride_h, stride_w),
         (padding_h, padding_w))
-    pool_ms = timed(pool_call, args.warmups, args.repeats)
+    pool_ms = (timed(pool_call, args.warmups, args.repeats)
+               if args.kernel in ("maxpool", "both") else None)
 
     bn_flops = 4 * N * H * W * C
     pool_flops = N * pool_h * pool_w * C * (kernel_h * kernel_w - 1)
     if library is None:
-        print_result("batchnorm", bn_flops, bn_ms, None)
-        print_result("maxpool2d", pool_flops, pool_ms, None)
+        if args.kernel in ("batchnorm", "both"):
+            print_result("batchnorm", bn_flops, bn_ms, None)
+        if args.kernel in ("maxpool", "both"):
+            print_result("maxpool2d", pool_flops, pool_ms, None)
         print("Custom results skipped: pass --library after implementing the skeletons.")
         return
 
-    bn_output = np.empty_like(input_nhwc)
+    bn_output = np.empty_like(input_chw16)
     bn_custom = lambda: library.fast_batchnorm(
-        pointer(input_nhwc), pointer(bn_output), N, H, W, C,
+        pointer(input_chw16), pointer(bn_output), N, H, W, C,
         pointer(running_mean), pointer(running_var), pointer(gamma),
         pointer(beta), ctypes.c_float(1e-5))
-    status = bn_custom()
-    if status == 0:
+    status = bn_custom() if args.kernel in ("batchnorm", "both") else 0
+    if args.kernel not in ("batchnorm", "both"):
+        bn_ms = None
+    if status == 0 and args.kernel in ("batchnorm", "both"):
         print_result("batchnorm", bn_flops, bn_ms,
                      timed(bn_custom, args.warmups, args.repeats))
-    else:
+    elif args.kernel in ("batchnorm", "both"):
         print_result("batchnorm", bn_flops, bn_ms, None)
         print("Custom batchnorm skipped: fast_batchnorm returned an error.")
 
-    pool_output = np.empty((N, pool_h, pool_w, C), dtype=np.float32)
+    pool_output = np.empty(
+        (N, (C + 15) // 16, pool_h, pool_w, 16), dtype=np.float32)
     pool_custom = lambda: library.fast_maxpool2d(
-        pointer(input_nhwc), pointer(pool_output), N, H, W, C,
+        pointer(input_chw16), pointer(pool_output), N, H, W, C,
         kernel_h, kernel_w, stride_h, stride_w, padding_h, padding_w)
-    status = pool_custom()
-    if status == 0:
+    status = pool_custom() if args.kernel in ("maxpool", "both") else 0
+    if args.kernel not in ("maxpool", "both"):
+        pool_ms = None
+    if status == 0 and args.kernel in ("maxpool", "both"):
         print_result("maxpool2d", pool_flops, pool_ms,
                      timed(pool_custom, args.warmups, args.repeats))
-    else:
+    elif args.kernel in ("maxpool", "both"):
         print_result("maxpool2d", pool_flops, pool_ms, None)
         print("Custom maxpool2d skipped: fast_maxpool2d returned an error.")
 
