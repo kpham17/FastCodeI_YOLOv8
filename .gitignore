@@ -75,23 +75,8 @@ benchmark.x
 test_conv_strided.x
 benchmark_conv_strided.x
 
-# Fused NHWC upconcat build and generated measurements
-test_fused_upconcat.x
-benchmarks/results/nhwc_avx2/
-benchmarks/results/nhwc_vl/
-
-# Universal NHWC concat generated executables
-test_universal_concat.x
-test_universal_concat_cpp.x
-test_universal_concat_portable.x
-test_universal_concat_sanitize.x
-bench_universal_concat.x
-
-# Standalone residual-add generated executables
-test_residual_add.x
-test_residual_add_cpp.x
-test_residual_add_sanitize.x
-bench_residual_add.x
+# Memory-kernel build artifacts
+build/memory/
 
 # Materialized NHWC chunk builds
 test_chunk_nhwc.x

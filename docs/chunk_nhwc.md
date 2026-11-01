@@ -57,7 +57,7 @@ ideal both-half bound remains 2S/64. These bounds assume independent
 operations and available data; they are not cache or DRAM throughput claims.
 
 Choose materialization using total copy-plus-consumer time, including all
-uses of the chunk. The existing zero-copy convolution/add APIs are retained;
+uses of the chunk. The existing zero-copy convolution API is retained;
 the presence of a faster copy kernel does not prove a full C2f/model speedup.
 
 On ece020, three process runs over 36 copy cases gave a 1.15x geometric
@@ -65,7 +65,9 @@ mean speedup versus per-pixel memcpy (range 0.93x--1.40x). Some both-output
 cases had substantial process-to-process variation; no universal fastest
 claim is justified. Extra pixel blocking and streaming stores did not give
 a consistent overall benefit, so they are excluded from the production API.
-Copying B before residual addition took 1.70x--2.47x the existing view-path
-time over the 12 tested shapes. Convolution plus copying ranged from 0.98x
+Historically, copying B before NHWC residual addition took 1.70x--2.47x the
+view-path time over 12 shapes. That residual API and its benchmark comparison
+have been replaced by the blocked residual kernel documented in
+[memory_kernels.md](memory_kernels.md). Convolution plus copying ranged from 0.98x
 to 1.09x the view-path time, with small apparent wins within measurement
 variation. These are individual consumer tests, not a full-model result.

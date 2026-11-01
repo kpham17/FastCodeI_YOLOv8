@@ -42,33 +42,24 @@ Consume C2f channel chunks without a separate chunk-copy pass using
 [STRIDED_CONVOLUTION.md](docs/STRIDED_CONVOLUTION.md) for the API,
 correctness tests, and a copy-plus-convolution benchmark.
 
-## Fused NHWC upsample and concatenate
+## Memory kernels
 
-Combine 2x nearest-neighbor upsampling and skip concatenation with
-`fused_upconcat_a` and `fused_upconcat_b`. The current VL_MIXED implementation
-uses 256-bit moves and AVX-512VL's extra vector registers. It requires
-AVX-512F and AVX-512VL, as supported by ece020.
+The production FP32 memory kernels use physical `[N][C/16][H][W][16]`
+storage, with positive channel counts divisible by 16:
 
-Both stages use QUAD traversal. Stage B interleaves each pixel's upsampled
-and skip stores; stage A interleaves its second 128-channel block and skips.
-See the [API and testing guide](docs/nhwc_avx2_upconcat.md).
-The [earlier AVX2 measurements](docs/nhwc_avx2_ece020_20261022.md) are historical.
+- `universal_concat_f32` in `include/universal_concat.h` joins channel planes.
+- `fused_upconcat_f32`, `fused_upconcat_a`, and `fused_upconcat_b` in
+  `include/fused_upconcat.h` combine 2x nearest upsampling and skip concatenation.
+- `residual_add` in `include/residual_add.h` adds dense blocked spans and
+  supports in-place output while preserving the shortcut.
 
-## Universal NHWC channel concatenation
+These replace the original NHWC memory-kernel APIs. The functions check
+capacities and invalid arguments before writing. For a C2f half, pass
+`cv1 + C*H*W` floats. Other kernels retain their existing layout contracts.
+See the [API, build and verification guide](docs/memory_kernels.md).
 
-Join any positive number of FP32 NHWC inputs with
-`universal_concat_nhwc_f32` in `include/universal_concat_nhwc.h`.
-The checked implementation uses cached AVX2 with a portable fallback and
-covers all eleven standalone YOLOv8n joins at 640/1024/2048 input sizes.
-Build with `make concat`; run `make check-concat` and
-`make check-concat-portable`. See the [API, benchmark and integration guide](docs/universal_concat.md).
-
-## Standalone bottleneck residual addition
-
-Add FP32 NHWC convolution output and a dense or strided shortcut with
-`residual_add_contiguous` / `residual_add_strided`. In-place output is supported;
-the shortcut is preserved for C2f concatenation. Production is one C file and
-one header. Build with `make residual`; test with `make check-residual`.
-See the [API and consistency guide](docs/residual_add.md).
+Build and test with `make memory-kernels check-memory`. On AFS, set
+`MEMORY_BUILD=/scratch/zihengli-memory-replace-20261031/afs-build`
+to keep generated files outside the nearly full account volume.
 
 Materialized channel splitting is available through `chunk2_nhwc_f32` in `include/chunk_nhwc.h`; either output may be omitted. See [usage and measurement notes](docs/chunk_nhwc.md). Build and verify with `make chunk check-chunk`; benchmark with `make bench-chunk` (one thread, CPU 2). Existing zero-copy model paths remain the default.
